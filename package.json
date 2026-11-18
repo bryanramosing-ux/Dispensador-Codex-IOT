@@ -1,0 +1,34 @@
+{
+  "name": "dispensador-codex-iot",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "apps/backend",
+    "apps/frontend"
+  ],
+  "engines": {
+    "node": ">=24.15 <25",
+    "npm": ">=11"
+  },
+  "scripts": {
+    "dev:backend": "npm run dev -w @dispensador/backend",
+    "dev:frontend": "npm run dev -w @dispensador/frontend",
+    "start": "npm run start -w @dispensador/backend",
+    "typecheck": "npm run typecheck --workspaces",
+    "build": "npm run build --workspaces",
+    "lint": "eslint apps",
+    "test": "npm run test -w @dispensador/backend",
+    "test:emulator": "npm run test:emulator -w @dispensador/backend",
+    "format": "prettier --write 'apps/**/*.{ts,vue,json,html}'",
+    "verify:assets": "node scripts/verify-assets.mjs",
+    "import:legacy": "node apps/backend/dist/persistence/import-legacy.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "eslint": "^9.39.1",
+    "eslint-plugin-vue": "^10.6.2",
+    "globals": "^16.5.0",
+    "prettier": "^3.6.2",
+    "typescript-eslint": "^8.48.1"
+  }
+}

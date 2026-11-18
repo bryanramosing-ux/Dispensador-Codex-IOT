@@ -1,0 +1,831 @@
+// Pruebas de la máquina de estados en el PC (sin ESP32).
+//   make -C ESP32/test_host
+// Simula el tiempo, el HC-SR04, la red, el PC, la batería y el servo.
+#include <cassert>
+#include <cstdio>
+#include <cstring>
+#include <deque>
+#include <string>
+#include <vector>
+
+#include "../Dispensador_ESP32/Controlador.h"
+#include "../Dispensador_ESP32/NivelGeometria.h"
+
+struct FakeHW : Hardware {
+  uint32_t t = 0;
+  float dist = -1;
+  bool wifi = true, cam = true, pc = true, boton = false, botonCorto = false;
+  int reconexiones = 0, lecturasDist = 0;
+  float vbat = 7.6f, vservo = 6.0f;
+  std::deque<RespuestaClasificacion> respuestas;
+  ResultadoDosis resultadoDosis = ResultadoDosis::OK;
+  float nivel = 80.0f;
+  bool pcRecibe = true;
+  std::deque<std::string> alertas;   // alertas entregadas al PC
+  int intentosAlerta = 0;
+  int dosis = 0, ciclosTotales = 0, reinicios = 0, clasificaciones = 0, consultasCamara = 0;
+  std::vector<uint32_t> tFotos;      // instante de cada pedido de clasificación (= foto)
+  bool verbose = false;
+  bool pwmOk = true, lecturaNvsOk = true, escrituraNvsOk = true;
+  uint8_t guardadas[N_CLASES] = {};
+  uint32_t totalesGuardados[N_CLASES] = {};
+  int escrituras = 0;
+  bool servoPreparado() override { return pwmOk; }
+  bool cargarRaciones(uint8_t* cuentas, uint32_t* totales, uint8_t clases) override {
+    if (!lecturaNvsOk) return false;
+    memcpy(cuentas, guardadas, clases * sizeof(*cuentas));
+    memcpy(totales, totalesGuardados, clases * sizeof(*totales));
+    return true;
+  }
+  bool guardarRaciones(const uint8_t* cuentas, const uint32_t* totales, uint8_t clases) override {
+    if (!escrituraNvsOk) return false;
+    memcpy(guardadas, cuentas, clases * sizeof(*cuentas));
+    memcpy(totalesGuardados, totales, clases * sizeof(*totales));
+    escrituras++;
+    return true;
+  }
+
+  uint32_t ahoraMs() override { return t; }
+  float distanciaCm() override {
+    lecturasDist++;
+    return dist;
+  }
+  bool wifiConectado() override { return wifi; }
+  void reconectarWifi() override { reconexiones++; }
+  bool camaraDisponible() override {
+    consultasCamara++;
+    return cam;
+  }
+  bool servidorDisponible() override { return pc; }
+  RespuestaClasificacion clasificar(int) override {
+    clasificaciones++;
+    tFotos.push_back(t);
+    if (respuestas.empty()) return RespuestaClasificacion{};  // ERROR_SERVIDOR
+    RespuestaClasificacion r = respuestas.front();
+    respuestas.pop_front();
+    return r;
+  }
+  float voltajeBateria() override { return vbat; }
+  float voltajeServo() override { return vservo; }
+  float nivelTolvaPct() override { return nivel; }
+  bool notificar(Alerta a, float) override {
+    intentosAlerta++;
+    if (!pcRecibe) return false;
+    alertas.push_back(nombreAlerta(a));
+    return true;
+  }
+  ResultadoDosis dosificar(uint8_t c) override {
+    assert(guardadas[1] + guardadas[2] + guardadas[3] > 0); // reservado antes de mover el motor
+    dosis++;
+    ciclosTotales += c;
+    return resultadoDosis;
+  }
+  bool botonResetPulsado() override { return boton; }
+  bool botonDispensarPulsado() override {   // un evento por pulsación
+    bool v = botonCorto;
+    botonCorto = false;
+    return v;
+  }
+  void reiniciar() override { reinicios++; }
+  void log(const char* m) override {
+    if (verbose) printf("  %8u ms  %s\n", (unsigned)t, m);
+  }
+};
+
+static RespuestaClasificacion resp(int clase, float conf = 0.9f, const char* motivo = "OK") {
+  RespuestaClasificacion r;
+  r.tipo = TipoRespuesta::OK;
+  r.clase = clase;
+  r.confianza = conf;
+  strncpy(r.motivo, motivo, sizeof(r.motivo) - 1);
+  return r;
+}
+
+static Parametros params() {
+  Parametros p{};
+  p.usarDeteccionAutomatica = true;   // escenarios originales: presencia + visión
+  p.ciclos[CLASE_MANUAL] = 1;
+  p.habilitada[CLASE_MANUAL] = true;
+  p.maxRacionesDia[CLASE_MANUAL] = 40;
+  p.maxPorcionesManual = 3;
+  p.botonDispensa = true;
+  p.distMinCm = 3;
+  p.distDeteccionCm = 35;
+  p.distLibreCm = 50;
+  p.lecturasConfirmacion = 3;
+  p.zonaLibreMs = 3000;
+  p.maxIntentosClasificacion = 3;
+  p.reintentoClasificacionMs = 4000;
+  p.ciclos[1] = 3;
+  p.ciclos[2] = 1;
+  p.habilitada[1] = p.habilitada[2] = true;
+  p.cooldownClaseMs[1] = p.cooldownClaseMs[2] = 60000;
+  p.maxRacionesDia[1] = p.maxRacionesDia[2] = 4;
+  p.maxCiclosPorRacion = 10;
+  p.cooldownGlobalMs = 30000;
+  p.usarMonitorBateria = true;
+  p.vbatMin = 6.8f;
+  p.vbatHisteresis = 0.2f;
+  p.usarMonitorServo = true;
+  p.vservoMin = 4.6f;
+  p.wifiReintentoMs = 5000;
+  p.wifiReinicioMs = 300000;
+  p.errorReintentoMs = 30000;
+  p.usarSensorNivel = true;
+  p.intervaloNivelMs = 60000;
+  p.nivelAlertaPct = 20;
+  p.nivelRearmePct = 30;
+  p.nivelVacioPct = 5;
+  p.lecturasNivel = 3;
+  p.reintentoAlertaMs = 30000;
+  return p;
+}
+
+// Montaje USB-C: un solo HC-SR04 (nivel), sin batería, sin visión.
+static Parametros paramsManual() {
+  Parametros p = params();
+  p.usarDeteccionAutomatica = false;
+  p.usarMonitorBateria = false;
+  p.usarMonitorServo = false;
+  p.cooldownGlobalMs = 15000;
+  p.intervaloNivelMs = 5000;
+  return p;
+}
+
+static void correr(Controlador& c, FakeHW& hw, uint32_t ms) {
+  for (uint32_t i = 0; i < ms; i += 50) {
+    c.actualizar();
+    hw.t += 50;
+  }
+}
+
+static int fallos = 0;
+#define CHECK(cond)                                                   \
+  do {                                                                \
+    if (!(cond)) {                                                    \
+      printf("    FALLO linea %d: %s\n", __LINE__, #cond);            \
+      fallos++;                                                       \
+    }                                                                 \
+  } while (0)
+
+static void prueba(const char* nombre) { printf("- %s\n", nombre); }
+
+int main() {
+  {
+    prueba("Perro detectado -> clasificado 1 -> dispensa 3 ciclos -> ESPERANDO");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    hw.respuestas.push_back(resp(CLASE_PERRO));
+    hw.dist = 20;
+    correr(c, hw, 2000);
+    CHECK(hw.dosis == 1 && hw.ciclosTotales == 3);
+    CHECK(c.estado() == Estado::ESPERANDO);
+    CHECK(c.racionesTotales(CLASE_PERRO) == 1);
+    CHECK(c.cooldownRestanteMs() > 0);
+  }
+  {
+    prueba("Mascota demasiado lejos: no se activa nada");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    hw.dist = 42;
+    correr(c, hw, 10000);
+    CHECK(hw.clasificaciones == 0 && hw.dosis == 0);
+  }
+  {
+    prueba("Lectura menor a DIST_MIN (sensor tapado) no dispara");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    hw.dist = 1.5f;
+    correr(c, hw, 5000);
+    CHECK(hw.clasificaciones == 0);
+  }
+  {
+    prueba("Gato: 1 ciclo; repetición inmediata bloqueada (cooldown + zona libre)");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    hw.respuestas.push_back(resp(CLASE_GATO));
+    hw.respuestas.push_back(resp(CLASE_GATO));
+    hw.dist = 25;
+    correr(c, hw, 2000);
+    CHECK(hw.dosis == 1 && hw.ciclosTotales == 1);
+    correr(c, hw, 120000);  // el gato se queda delante 2 minutos
+    CHECK(hw.dosis == 1);   // no se rearma sin zona libre
+    hw.dist = -1;
+    correr(c, hw, 4000);    // se va
+    hw.dist = 25;
+    correr(c, hw, 2000);    // vuelve (cooldown de clase de 60 s ya pasó)
+    CHECK(hw.dosis == 2);
+  }
+  {
+    prueba("Cooldown global impide racion aunque la zona se libere");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    hw.respuestas.push_back(resp(CLASE_PERRO));
+    hw.respuestas.push_back(resp(CLASE_GATO));
+    hw.dist = 20;
+    correr(c, hw, 2000);
+    hw.dist = -1;
+    correr(c, hw, 4000);
+    hw.dist = 20;
+    correr(c, hw, 5000);  // 11 s después de la primera: cooldown global 30 s
+    CHECK(hw.dosis == 1 && hw.clasificaciones == 1);
+    correr(c, hw, 25000);
+    CHECK(hw.dosis == 2);
+  }
+  {
+    prueba("Clasificacion incierta (0) x3: NO dispensa y desiste");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    for (int i = 0; i < 5; i++) hw.respuestas.push_back(resp(0, 0.4f, "BAJA_CONFIANZA"));
+    hw.dist = 20;
+    correr(c, hw, 30000);
+    CHECK(hw.dosis == 0);
+    CHECK(hw.clasificaciones == 3);
+    CHECK(c.estado() == Estado::ESPERANDO);
+  }
+  {
+    prueba("Fotos cada 2 s mientras la mascota sigue delante (max. 5) sin repetir /status de la camara");
+    Parametros p = params();
+    p.reintentoClasificacionMs = 2000;
+    p.maxIntentosClasificacion = 5;
+    FakeHW hw;
+    Controlador c(hw, p);
+    c.iniciar();
+    for (int i = 0; i < 6; i++) hw.respuestas.push_back(resp(0, 0.4f, "BAJA_CONFIANZA"));
+    hw.dist = 20;
+    correr(c, hw, 30000);
+    CHECK(hw.clasificaciones == 5 && hw.dosis == 0);
+    CHECK(hw.consultasCamara == 1);                 // solo antes de la primera foto
+    bool cada2s = hw.tFotos.size() == 5;
+    for (size_t i = 1; i < hw.tFotos.size(); i++) {
+      uint32_t dt = hw.tFotos[i] - hw.tFotos[i - 1];
+      cada2s &= dt >= 2000 && dt <= 2200;
+    }
+    CHECK(cada2s);
+    CHECK(c.estado() == Estado::ESPERANDO);
+  }
+  {
+    prueba("Fotos cada 2 s: la tercera foto identifica al gato y se dispensa");
+    Parametros p = params();
+    p.reintentoClasificacionMs = 2000;
+    p.maxIntentosClasificacion = 5;
+    FakeHW hw;
+    Controlador c(hw, p);
+    c.iniciar();
+    hw.respuestas.push_back(resp(0, 0.2f, "SIN_MASCOTA"));      // todavía entrando al cuadro
+    hw.respuestas.push_back(resp(0, 0.5f, "BAJA_CONFIANZA"));
+    hw.respuestas.push_back(resp(CLASE_GATO, 0.93f));
+    hw.dist = 20;
+    correr(c, hw, 10000);
+    CHECK(hw.clasificaciones == 3 && hw.dosis == 1 && hw.ciclosTotales == 1);
+  }
+  {
+    prueba("Imagen invalida y luego perro: el reintento si dispensa");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    hw.respuestas.push_back(resp(0, 0, "IMAGEN_BORROSA"));
+    hw.respuestas.push_back(resp(CLASE_PERRO));
+    hw.dist = 20;
+    correr(c, hw, 8000);
+    CHECK(hw.clasificaciones == 2 && hw.dosis == 1);
+  }
+  {
+    prueba("La mascota abandona el area antes de dispensar: no dispensa");
+    struct HWSeVa : FakeHW {
+      RespuestaClasificacion clasificar(int d) override {
+        dist = -1;  // se va mientras el PC clasifica
+        return FakeHW::clasificar(d);
+      }
+    } hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    hw.respuestas.push_back(resp(CLASE_PERRO));
+    hw.dist = 20;
+    correr(c, hw, 3000);
+    CHECK(hw.clasificaciones == 1 && hw.dosis == 0);
+  }
+  {
+    prueba("Wi-Fi perdido -> ERROR_WIFI -> recuperado -> ESPERANDO");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    hw.wifi = false;
+    correr(c, hw, 1000);
+    CHECK(c.estado() == Estado::ERROR_WIFI);
+    hw.dist = 20;
+    hw.respuestas.push_back(resp(CLASE_PERRO));
+    correr(c, hw, 5000);
+    CHECK(hw.dosis == 0);
+    hw.wifi = true;
+    correr(c, hw, 200);
+    CHECK(c.estado() == Estado::ESPERANDO);
+  }
+  {
+    prueba("Wi-Fi caido 5 min -> reinicio del ESP32");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    hw.wifi = false;
+    correr(c, hw, 301000);
+    CHECK(hw.reinicios >= 1);
+  }
+  {
+    prueba("ESP32-CAM no responde -> ERROR_CAMARA -> se recupera");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    hw.cam = false;
+    hw.dist = 20;
+    correr(c, hw, 1000);
+    CHECK(c.estado() == Estado::ERROR_CAMARA);
+    hw.cam = true;
+    correr(c, hw, 31000);
+    CHECK(c.estado() == Estado::ESPERANDO);
+    CHECK(hw.dosis == 0);
+  }
+  {
+    prueba("PC informa camara caida (502) -> ERROR_CAMARA");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    RespuestaClasificacion r;
+    r.tipo = TipoRespuesta::ERROR_CAMARA;
+    hw.respuestas.push_back(r);
+    hw.dist = 20;
+    correr(c, hw, 1000);
+    CHECK(c.estado() == Estado::ERROR_CAMARA);
+  }
+  {
+    prueba("PC no responde -> ERROR_CLASIFICACION -> recuperado");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    hw.dist = 20;  // sin respuestas encoladas = timeout
+    hw.pc = false;
+    correr(c, hw, 1000);
+    CHECK(c.estado() == Estado::ERROR_CLASIFICACION);
+    hw.pc = true;
+    correr(c, hw, 31000);
+    CHECK(c.estado() == Estado::ESPERANDO && hw.dosis == 0);
+  }
+  {
+    prueba("Bateria baja -> ERROR_ALIMENTACION (con histeresis)");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    hw.vbat = 6.6f;
+    hw.dist = 20;
+    hw.respuestas.push_back(resp(CLASE_PERRO));
+    correr(c, hw, 2000);
+    CHECK(c.estado() == Estado::ERROR_ALIMENTACION && hw.dosis == 0);
+    hw.vbat = 6.9f;  // por encima del mínimo pero dentro de la histéresis
+    correr(c, hw, 1000);
+    CHECK(c.estado() == Estado::ERROR_ALIMENTACION);
+    hw.vbat = 7.2f;
+    correr(c, hw, 200);
+    CHECK(c.estado() == Estado::ESPERANDO);
+  }
+  {
+    prueba("Riel del servo ausente -> ERROR_SERVO bloqueante; boton lo borra");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    hw.vservo = 0.2f;
+    hw.dist = 20;
+    hw.respuestas.push_back(resp(CLASE_PERRO));
+    correr(c, hw, 2000);
+    CHECK(c.estado() == Estado::ERROR_SERVO && hw.dosis == 0);
+    hw.vservo = 6.0f;
+    correr(c, hw, 60000);
+    CHECK(c.estado() == Estado::ERROR_SERVO);  // no se borra solo
+    hw.boton = true;
+    correr(c, hw, 100);
+    hw.boton = false;
+    CHECK(c.estado() == Estado::ESPERANDO);
+  }
+  {
+    prueba("Atasco durante la dosis -> ERROR_MECANISMO bloqueante");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    hw.resultadoDosis = ResultadoDosis::ATASCO;
+    hw.dist = 20;
+    hw.respuestas.push_back(resp(CLASE_PERRO));
+    hw.respuestas.push_back(resp(CLASE_PERRO));
+    correr(c, hw, 2000);
+    CHECK(c.estado() == Estado::ERROR_MECANISMO);
+    correr(c, hw, 120000);
+    CHECK(hw.dosis == 1);  // no vuelve a intentar sin intervención
+  }
+  {
+    prueba("Limite diario por clase");
+    FakeHW hw;
+    Parametros p = params();
+    p.cooldownGlobalMs = 0;
+    p.cooldownClaseMs[1] = 0;
+    p.maxRacionesDia[1] = 2;
+    Controlador c(hw, p);
+    c.iniciar();
+    for (int i = 0; i < 4; i++) {
+      hw.respuestas.push_back(resp(CLASE_PERRO));
+      hw.dist = 20;
+      correr(c, hw, 2000);
+      hw.dist = -1;
+      correr(c, hw, 4000);
+    }
+    CHECK(hw.dosis == 2);
+    CHECK(c.racionesUltimas24h(CLASE_PERRO) == 2);
+    hw.t += 86400000UL;  // pasan 24 h
+    hw.respuestas.push_back(resp(CLASE_PERRO));
+    hw.dist = 20;
+    correr(c, hw, 2000);
+    CHECK(hw.dosis == 3);
+  }
+  {
+    prueba("Clase deshabilitada (solo perros): gato no recibe");
+    FakeHW hw;
+    Parametros p = params();
+    p.habilitada[2] = false;
+    Controlador c(hw, p);
+    c.iniciar();
+    hw.respuestas.push_back(resp(CLASE_GATO));
+    hw.dist = 20;
+    correr(c, hw, 3000);
+    CHECK(hw.dosis == 0 && hw.clasificaciones == 1);
+  }
+  {
+    prueba("Desborde de millis() (49,7 dias) no rompe cooldown");
+    FakeHW hw;
+    hw.t = 0xFFFFFFFFUL - 1000;
+    Controlador c(hw, params());
+    c.iniciar();
+    hw.respuestas.push_back(resp(CLASE_PERRO));
+    hw.respuestas.push_back(resp(CLASE_PERRO));
+    hw.dist = 20;
+    correr(c, hw, 2000);
+    CHECK(hw.dosis == 1);
+    hw.dist = -1;
+    correr(c, hw, 4000);
+    hw.dist = 20;
+    correr(c, hw, 3000);
+    CHECK(hw.dosis == 1 && hw.clasificaciones == 1);  // cooldown global (30 s) activo pese al desborde
+    correr(c, hw, 60000);
+    // A los 30 s se clasifica de nuevo, pero el cooldown de CLASE (60 s) lo impide
+    // y la detección queda desarmada hasta que la mascota se vaya.
+    CHECK(hw.dosis == 1 && hw.clasificaciones == 2);
+    hw.respuestas.push_back(resp(CLASE_PERRO));
+    hw.dist = -1;
+    correr(c, hw, 4000);
+    hw.dist = 20;
+    correr(c, hw, 2000);
+    CHECK(hw.dosis == 2);
+  }
+
+  {
+    prueba("Nivel de tolva: alerta COMIDA_BAJA una sola vez (3 lecturas) y COMIDA_REPUESTA al recargar");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    correr(c, hw, 1000);
+    CHECK(c.nivelTolva() == 80.0f && hw.alertas.empty());
+    hw.nivel = 15;
+    correr(c, hw, 125000);          // 2 lecturas bajas: todavía no
+    CHECK(hw.alertas.empty());
+    correr(c, hw, 60000);           // 3.a lectura baja
+    CHECK(hw.alertas.size() == 1 && hw.alertas.back() == "COMIDA_BAJA");
+    correr(c, hw, 300000);          // sigue baja: no repite
+    CHECK(hw.alertas.size() == 1);
+    hw.nivel = 25;                  // entre alerta y rearme: sin cambios (histéresis)
+    correr(c, hw, 300000);
+    CHECK(hw.alertas.size() == 1 && c.alertaNivel() == Alerta::COMIDA_BAJA);
+    hw.nivel = 90;
+    correr(c, hw, 200000);
+    CHECK(hw.alertas.size() == 2 && hw.alertas.back() == "COMIDA_REPUESTA");
+    CHECK(c.alertaNivel() == Alerta::NINGUNA);
+  }
+  {
+    prueba("Tolva vacia: COMIDA_AGOTADA y no se dispensa; con recarga parcial vuelve a dispensar");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    hw.nivel = 2;
+    correr(c, hw, 200000);
+    CHECK(c.alertaNivel() == Alerta::COMIDA_AGOTADA);
+    CHECK(!hw.alertas.empty() && hw.alertas.back() == "COMIDA_AGOTADA");
+    hw.respuestas.push_back(resp(CLASE_PERRO));
+    hw.dist = 20;
+    correr(c, hw, 3000);
+    CHECK(hw.clasificaciones == 1 && hw.dosis == 0);
+    hw.dist = -1;
+    hw.nivel = 12;                  // recarga parcial: por encima de vacío, debajo de alerta
+    correr(c, hw, 200000);
+    CHECK(c.alertaNivel() == Alerta::COMIDA_BAJA);
+    hw.respuestas.push_back(resp(CLASE_PERRO));
+    hw.dist = 20;
+    correr(c, hw, 3000);
+    CHECK(hw.dosis == 1);
+  }
+  {
+    prueba("Sensor de nivel sin lectura: aviso unico y la alimentacion NO se bloquea");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    hw.nivel = -1;
+    correr(c, hw, 400000);
+    int avisos = 0;
+    for (auto& a : hw.alertas) avisos += a == "SENSOR_NIVEL_SIN_LECTURA";
+    CHECK(avisos == 1);
+    hw.respuestas.push_back(resp(CLASE_GATO));
+    hw.dist = 20;
+    correr(c, hw, 3000);
+    CHECK(hw.dosis == 1);
+  }
+  {
+    prueba("PC no recibe la alerta: se reintenta cada 30 s hasta entregarla");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    hw.pcRecibe = false;
+    hw.nivel = 10;
+    correr(c, hw, 125000);          // 3 lecturas: alerta generada pero no entregada
+    CHECK(hw.alertas.empty() && c.alertaPendiente());
+    int antes = hw.intentosAlerta;
+    correr(c, hw, 61000);
+    CHECK(hw.intentosAlerta >= antes + 2);
+    hw.pcRecibe = true;
+    correr(c, hw, 31000);
+    CHECK(hw.alertas.size() == 1 && hw.alertas.back() == "COMIDA_BAJA" && !c.alertaPendiente());
+  }
+
+  // ------------------------------------------------------------------------
+  // Dispensación manual (panel web / botón / serie) y modo sin visión
+  // ------------------------------------------------------------------------
+  {
+    prueba("Manual: pedido de 2 porciones aceptado -> 2 ciclos -> ESPERANDO, con registro");
+    FakeHW hw;
+    Controlador c(hw, paramsManual());
+    c.iniciar();
+    correr(c, hw, 500);
+    CHECK(c.solicitarDispensacion(2, Origen::PANEL) == Solicitud::ACEPTADA);
+    CHECK(c.dosisPendiente() && hw.dosis == 0);        // se ejecuta en el lazo, no dentro del pedido
+    correr(c, hw, 500);
+    CHECK(hw.dosis == 1 && hw.ciclosTotales == 2);
+    CHECK(c.estado() == Estado::ESPERANDO && !c.dosisPendiente());
+    CHECK(c.intentosDosis() == 1 && c.racionesTotales(CLASE_MANUAL) == 1);
+    CHECK(c.ultimoOrigen() == Origen::PANEL && c.ultimasPorciones() == 2);
+    CHECK(c.ultimoResultado() == ResultadoDosis::OK && c.racionesUltimas24hTotal() == 1);
+  }
+  {
+    prueba("Manual: porciones invalidas (0, 4, 200) se rechazan y el servo no se mueve");
+    FakeHW hw;
+    Controlador c(hw, paramsManual());
+    c.iniciar();
+    CHECK(c.solicitarDispensacion(0, Origen::PANEL) == Solicitud::PORCIONES_INVALIDAS);
+    CHECK(c.solicitarDispensacion(4, Origen::PANEL) == Solicitud::PORCIONES_INVALIDAS);
+    CHECK(c.solicitarDispensacion(200, Origen::SERIE) == Solicitud::PORCIONES_INVALIDAS);
+    correr(c, hw, 2000);
+    CHECK(hw.dosis == 0 && !c.dosisPendiente());
+  }
+  {
+    prueba("Manual: no hay dos dosis a la vez (OCUPADO) y despues rige el cooldown");
+    FakeHW hw;
+    Controlador c(hw, paramsManual());
+    c.iniciar();
+    CHECK(c.solicitarDispensacion(1, Origen::PANEL) == Solicitud::ACEPTADA);
+    CHECK(c.solicitarDispensacion(1, Origen::PANEL) == Solicitud::OCUPADO);   // hay una pendiente
+    c.actualizar();                                                           // ESPERANDO -> DOSIFICANDO
+    CHECK(c.estado() == Estado::DOSIFICANDO);
+    CHECK(c.solicitarDispensacion(1, Origen::PANEL) == Solicitud::OCUPADO);   // dosis en curso
+    correr(c, hw, 500);
+    CHECK(hw.dosis == 1);
+    CHECK(c.solicitarDispensacion(1, Origen::PANEL) == Solicitud::COOLDOWN);
+    correr(c, hw, 10000);
+    CHECK(c.solicitarDispensacion(1, Origen::BOTON) == Solicitud::COOLDOWN && c.cooldownRestanteMs() > 0);
+    correr(c, hw, 5000);
+    CHECK(c.solicitarDispensacion(1, Origen::PANEL) == Solicitud::ACEPTADA);
+    correr(c, hw, 500);
+    CHECK(hw.dosis == 2);
+  }
+  {
+    prueba("Manual sin Wi-Fi: NO es error, el boton dispensa, se reintenta la conexion y no hay reinicio");
+    FakeHW hw;
+    hw.wifi = false;
+    Controlador c(hw, paramsManual());
+    c.iniciar();
+    CHECK(c.estado() == Estado::ESPERANDO);
+    correr(c, hw, 1000);
+    hw.botonCorto = true;
+    correr(c, hw, 500);
+    CHECK(hw.dosis == 1 && c.ultimoOrigen() == Origen::BOTON && c.ultimasPorciones() == 1);
+    correr(c, hw, 400000);                 // casi 7 minutos sin Wi-Fi
+    CHECK(c.estado() == Estado::ESPERANDO && hw.reinicios == 0);
+    CHECK(hw.reconexiones >= 60);          // un reintento cada 5 s
+    CHECK(c.nivelTolva() == 80.0f);        // el nivel se siguió midiendo
+    hw.wifi = true;
+    int antes = hw.reconexiones;
+    correr(c, hw, 20000);
+    CHECK(hw.reconexiones == antes);
+  }
+  {
+    prueba("Manual: sin sensor de presencia no se mide distancia ni se clasifica aunque haya algo delante");
+    FakeHW hw;
+    Controlador c(hw, paramsManual());
+    c.iniciar();
+    hw.dist = 20;
+    hw.respuestas.push_back(resp(CLASE_PERRO));
+    correr(c, hw, 60000);
+    CHECK(hw.lecturasDist == 0 && hw.clasificaciones == 0 && hw.dosis == 0);
+  }
+  {
+    prueba("Manual: tolva vacia -> TOLVA_VACIA; al reponer vuelve a aceptar");
+    FakeHW hw;
+    Controlador c(hw, paramsManual());
+    c.iniciar();
+    hw.nivel = 1;
+    correr(c, hw, 20000);
+    CHECK(c.alertaNivel() == Alerta::COMIDA_AGOTADA);
+    CHECK(c.solicitarDispensacion(1, Origen::PANEL) == Solicitud::TOLVA_VACIA);
+    hw.botonCorto = true;
+    correr(c, hw, 1000);
+    CHECK(hw.dosis == 0);
+    hw.nivel = 70;
+    correr(c, hw, 20000);
+    CHECK(c.solicitarDispensacion(1, Origen::PANEL) == Solicitud::ACEPTADA);
+  }
+  {
+    prueba("Manual: atasco -> ERROR_MECANISMO; pedidos y boton rechazados hasta borrar el error");
+    FakeHW hw;
+    Controlador c(hw, paramsManual());
+    c.iniciar();
+    hw.resultadoDosis = ResultadoDosis::ATASCO;
+    CHECK(c.solicitarDispensacion(1, Origen::PANEL) == Solicitud::ACEPTADA);
+    correr(c, hw, 500);
+    CHECK(c.estado() == Estado::ERROR_MECANISMO && c.ultimoResultado() == ResultadoDosis::ATASCO);
+    CHECK(c.intentosDosis() == 1);
+    CHECK(c.solicitarDispensacion(1, Origen::PANEL) == Solicitud::ERROR_ACTIVO);
+    hw.botonCorto = true;                  // pulsación corta durante el error: se descarta
+    correr(c, hw, 60000);
+    CHECK(hw.dosis == 1 && c.estado() == Estado::ERROR_MECANISMO);
+    hw.resultadoDosis = ResultadoDosis::OK;
+    CHECK(c.borrarErrores());
+    CHECK(!c.borrarErrores());             // ya no había error
+    correr(c, hw, 1000);
+    CHECK(hw.dosis == 1);                  // la pulsación vieja no quedó guardada
+    CHECK(c.solicitarDispensacion(1, Origen::PANEL) == Solicitud::ACEPTADA);
+  }
+  {
+    prueba("Manual: limite diario y dispensacion manual deshabilitada");
+    FakeHW hw;
+    Parametros p = paramsManual();
+    p.cooldownGlobalMs = 0;
+    p.maxRacionesDia[CLASE_MANUAL] = 2;
+    Controlador c(hw, p);
+    c.iniciar();
+    for (int i = 0; i < 2; i++) {
+      CHECK(c.solicitarDispensacion(1, Origen::PANEL) == Solicitud::ACEPTADA);
+      correr(c, hw, 500);
+    }
+    CHECK(c.solicitarDispensacion(1, Origen::PANEL) == Solicitud::LIMITE_DIARIO);
+    hw.t += 86400000UL;
+    CHECK(c.solicitarDispensacion(1, Origen::PANEL) == Solicitud::ACEPTADA);
+
+    FakeHW hw2;
+    p.habilitada[CLASE_MANUAL] = false;
+    Controlador c2(hw2, p);
+    c2.iniciar();
+    CHECK(c2.solicitarDispensacion(1, Origen::PANEL) == Solicitud::DESHABILITADA);
+  }
+  {
+    prueba("Manual con monitor del riel: sin tension en el servo se rechaza el pedido");
+    FakeHW hw;
+    Parametros p = paramsManual();
+    p.usarMonitorServo = true;
+    p.vservoMin = 4.3f;
+    Controlador c(hw, p);
+    c.iniciar();
+    hw.vservo = 0.3f;
+    CHECK(c.solicitarDispensacion(1, Origen::PANEL) == Solicitud::SIN_ALIMENTACION_SERVO);
+    hw.vservo = 5.0f;
+    CHECK(c.solicitarDispensacion(1, Origen::PANEL) == Solicitud::ACEPTADA);
+  }
+  {
+    prueba("Modo automatico: el pedido manual tambien funciona y respeta el cooldown global");
+    FakeHW hw;
+    Controlador c(hw, params());
+    c.iniciar();
+    CHECK(c.solicitarDispensacion(1, Origen::PANEL) == Solicitud::ACEPTADA);
+    correr(c, hw, 500);
+    CHECK(hw.dosis == 1 && hw.ciclosTotales == 1);
+    hw.respuestas.push_back(resp(CLASE_PERRO));
+    hw.dist = 20;
+    correr(c, hw, 5000);
+    CHECK(hw.clasificaciones == 0);        // cooldown global de 30 s tras la manual
+  }
+
+  {
+    prueba("Altura -> volumen: extremos, monotonía y embudo (20 % de altura ~ 4 % de volumen)");
+    CHECK(alturaAVolumenPct(-5) == 0.0f && alturaAVolumenPct(0) == 0.0f);
+    CHECK(alturaAVolumenPct(100) == 100.0f && alturaAVolumenPct(130) == 100.0f);
+    float previo = -1;
+    bool monotona = true;
+    for (float h = 0; h <= 100.0f; h += 0.5f) {
+      float v = alturaAVolumenPct(h);
+      monotona &= v >= previo && v <= h + 0.01f;   // embudo: nunca más volumen que altura
+      previo = v;
+    }
+    CHECK(monotona);
+    CHECK(alturaAVolumenPct(20) > 4.0f && alturaAVolumenPct(20) < 5.0f);
+    CHECK(alturaAVolumenPct(55) > 26.0f && alturaAVolumenPct(55) < 28.0f);   // interpolación 22 -> 32
+  }
+
+
+  {
+    prueba("Reinicio: conserva limite diario y cooldown; no repite racion a la mascota presente");
+    FakeHW hw;
+    auto p = params(); p.maxRacionesDia[1] = 1;
+    Controlador antes(hw, p); antes.iniciar();
+    hw.dist = 20; hw.respuestas.push_back(resp(CLASE_PERRO)); correr(antes, hw, 2000);
+    CHECK(hw.dosis == 1 && hw.guardadas[1] == 1);
+    hw.t = 0;
+    Controlador despues(hw, p); despues.iniciar();
+    CHECK(despues.racionesUltimas24h(1) == 1 && despues.cooldownRestanteMs() > 0);
+    hw.respuestas.push_back(resp(CLASE_PERRO)); correr(despues, hw, 120000);
+    CHECK(hw.dosis == 1);
+    hw.dist = -1; correr(despues, hw, 4000); hw.dist = 20; correr(despues, hw, 2000);
+    CHECK(hw.dosis == 1); // incluso tras liberar zona, sigue vigente el limite diario
+    hw.t = 86400000UL; hw.dist = -1; correr(despues, hw, 4000);
+    CHECK(despues.racionesUltimas24h(1) == 0 && hw.guardadas[1] == 0);
+    hw.respuestas.push_back(resp(CLASE_PERRO));
+    hw.dist = 20; correr(despues, hw, 2000); CHECK(hw.dosis == 2);
+  }
+  {
+    prueba("Perdida de riel DURANTE entrega: el intento ya esta guardado");
+    FakeHW hw; Controlador c(hw, params()); c.iniciar();
+    hw.resultadoDosis = ResultadoDosis::SIN_ALIMENTACION_SERVO;
+    hw.dist = 20; hw.respuestas.push_back(resp(CLASE_PERRO)); correr(c, hw, 2000);
+    CHECK(c.estado() == Estado::ERROR_SERVO && c.racionesUltimas24h(1) == 1 && hw.guardadas[1] == 1);
+  }
+  {
+    prueba("NVS inaccesible o corrupta: no dosifica y RESET no borra el bloqueo");
+    FakeHW hw; hw.lecturaNvsOk = false;
+    Controlador c(hw, params()); c.iniciar(); c.borrarErrores();
+    hw.dist = 20; correr(c, hw, 2000);
+    CHECK(c.estado() == Estado::ERROR_REGISTRO && hw.dosis == 0);
+  }
+  {
+    prueba("Fallo al reservar en NVS: motor no se acciona");
+    FakeHW hw; Controlador c(hw, params()); c.iniciar(); hw.escrituraNvsOk = false;
+    hw.dist = 20; hw.respuestas.push_back(resp(CLASE_PERRO)); correr(c, hw, 2000);
+    c.borrarErrores();
+    CHECK(c.estado() == Estado::ERROR_REGISTRO && hw.dosis == 0);
+  }
+  {
+    prueba("PWM no inicializado: bloqueo persistente incluso con RESET");
+    FakeHW hw; hw.pwmOk = false; Controlador c(hw, params()); c.iniciar();
+    c.borrarErrores(); hw.dist = 20; correr(c, hw, 2000);
+    CHECK(c.estado() == Estado::ERROR_SERVO && hw.dosis == 0);
+  }
+  {
+    prueba("Registros caducados no reaparecen tras una vuelta completa de millis");
+    FakeHW hw; Controlador c(hw, params()); c.iniciar();
+    hw.dist = 20; hw.respuestas.push_back(resp(CLASE_PERRO)); correr(c, hw, 2000);
+    hw.dist = -1; hw.t = 86410000UL; correr(c, hw, 100);
+    CHECK(hw.guardadas[1] == 0);
+    hw.t = 2000; correr(c, hw, 100);
+    CHECK(c.racionesUltimas24h(1) == 0);
+  }
+
+
+  {
+    prueba("Manual: reinicio conserva limite diario y no permite eludirlo desde panel");
+    FakeHW hw; auto p = paramsManual(); p.maxRacionesDia[CLASE_MANUAL] = 1;
+    Controlador antes(hw, p); antes.iniciar();
+    CHECK(antes.solicitarDispensacion(1, Origen::PANEL) == Solicitud::ACEPTADA);
+    correr(antes, hw, 500); CHECK(hw.guardadas[CLASE_MANUAL] == 1);
+    hw.t = 0;
+    Controlador despues(hw, p); despues.iniciar();
+    CHECK(despues.solicitarDispensacion(1, Origen::PANEL) == Solicitud::COOLDOWN);
+    hw.t = 120000; correr(despues, hw, 100);
+    CHECK(despues.solicitarDispensacion(1, Origen::PANEL) == Solicitud::LIMITE_DIARIO);
+    CHECK(hw.dosis == 1);
+  }
+  {
+    prueba("Manual: falla de NVS bloquea un pedido ya aceptado antes del motor");
+    FakeHW hw; Controlador c(hw, paramsManual()); c.iniciar();
+    CHECK(c.solicitarDispensacion(1, Origen::PANEL) == Solicitud::ACEPTADA);
+    hw.escrituraNvsOk = false; correr(c, hw, 500);
+    CHECK(c.estado() == Estado::ERROR_REGISTRO && hw.dosis == 0);
+    CHECK(!c.borrarErrores());
+    CHECK(c.solicitarDispensacion(1, Origen::PANEL) == Solicitud::ERROR_ACTIVO);
+  }
+
+  printf(fallos ? "\nRESULTADO: %d FALLO(S)\n" : "\nRESULTADO: todas las pruebas OK\n", fallos);
+  return fallos ? 1 : 0;
+}

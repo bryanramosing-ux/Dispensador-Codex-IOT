@@ -1,0 +1,582 @@
+// =============================================================================
+//  Controlador.cpp  -  Máquina de estados (ver Documentation/architecture)
+// =============================================================================
+#include "Controlador.h"
+
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+
+static const uint32_t MS_24H = 86400000UL;
+
+const char* nombreEstado(Estado e) {
+  switch (e) {
+    case Estado::ESPERANDO:           return "ESPERANDO";
+    case Estado::DETECTADO:           return "DETECTADO";
+    case Estado::CAPTURANDO:          return "CAPTURANDO";
+    case Estado::PROCESANDO:          return "PROCESANDO";
+    case Estado::CLASIFICADO:         return "CLASIFICADO";
+    case Estado::DOSIFICANDO:         return "DOSIFICANDO";
+    case Estado::FINALIZADO:          return "FINALIZADO";
+    case Estado::ERROR_WIFI:          return "ERROR_WIFI";
+    case Estado::ERROR_CAMARA:        return "ERROR_CAMARA";
+    case Estado::ERROR_CLASIFICACION: return "ERROR_CLASIFICACION";
+    case Estado::ERROR_SERVO:         return "ERROR_SERVO";
+    case Estado::ERROR_ALIMENTACION:  return "ERROR_ALIMENTACION";
+    case Estado::ERROR_MECANISMO:     return "ERROR_MECANISMO";
+    case Estado::ERROR_REGISTRO:      return "ERROR_REGISTRO";
+  }
+  return "?";
+}
+
+const char* nombreAlerta(Alerta a) {
+  switch (a) {
+    case Alerta::NINGUNA:                  return "NINGUNA";
+    case Alerta::COMIDA_BAJA:              return "COMIDA_BAJA";
+    case Alerta::COMIDA_AGOTADA:           return "COMIDA_AGOTADA";
+    case Alerta::COMIDA_REPUESTA:          return "COMIDA_REPUESTA";
+    case Alerta::SENSOR_NIVEL_SIN_LECTURA: return "SENSOR_NIVEL_SIN_LECTURA";
+  }
+  return "?";
+}
+
+const char* nombreResultado(ResultadoDosis r) {
+  switch (r) {
+    case ResultadoDosis::OK:                     return "OK";
+    case ResultadoDosis::SIN_ALIMENTACION_SERVO: return "SIN_ALIMENTACION_SERVO";
+    case ResultadoDosis::ATASCO:                 return "ATASCO";
+    case ResultadoDosis::NINGUNA:                return "NINGUNA";
+  }
+  return "?";
+}
+
+const char* nombreSolicitud(Solicitud s) {
+  switch (s) {
+    case Solicitud::ACEPTADA:               return "ACEPTADA";
+    case Solicitud::OCUPADO:                return "OCUPADO";
+    case Solicitud::ERROR_ACTIVO:           return "ERROR_ACTIVO";
+    case Solicitud::PORCIONES_INVALIDAS:    return "PORCIONES_INVALIDAS";
+    case Solicitud::DESHABILITADA:          return "DESHABILITADA";
+    case Solicitud::COOLDOWN:               return "COOLDOWN";
+    case Solicitud::LIMITE_DIARIO:          return "LIMITE_DIARIO";
+    case Solicitud::TOLVA_VACIA:            return "TOLVA_VACIA";
+    case Solicitud::SIN_ALIMENTACION_SERVO: return "SIN_ALIMENTACION_SERVO";
+  }
+  return "?";
+}
+
+const char* nombreOrigen(Origen o) {
+  switch (o) {
+    case Origen::NINGUNO:    return "NINGUNO";
+    case Origen::PANEL:      return "PANEL";
+    case Origen::BOTON:      return "BOTON";
+    case Origen::SERIE:      return "SERIE";
+    case Origen::AUTOMATICO: return "AUTOMATICO";
+  }
+  return "?";
+}
+
+Controlador::Controlador(Hardware& hw, const Parametros& p) : hw_(hw), p_(p) {}
+
+// ----------------------------------------------------------------------------
+// Nivel de la tolva: se mide cada intervaloNivelMs (y después de cada ración),
+// solo en ESPERANDO para no interferir con la dosis ni con el HC-SR04 frontal.
+// Un cambio de nivel se confirma con lecturasNivel lecturas seguidas
+// (las croquetas forman una superficie irregular) y tiene histéresis.
+// ----------------------------------------------------------------------------
+void Controlador::emitir(Alerta a) {
+  logf("ALERTA %s (nivel %.0f %%)", nombreAlerta(a), nivelPct_);
+  if (hw_.notificar(a, nivelPct_)) {
+    pendiente_ = Alerta::NINGUNA;
+  } else {
+    pendiente_ = a;                 // se reintenta más tarde
+    tPendiente_ = hw_.ahoraMs();
+  }
+}
+
+void Controlador::vigilarNivel(uint32_t ahora) {
+  if (!p_.usarSensorNivel) return;
+  if (pendiente_ != Alerta::NINGUNA && ahora - tPendiente_ >= p_.reintentoAlertaMs) {
+    emitir(pendiente_);
+  }
+  if (nivelMedido_ && ahora - tNivel_ < p_.intervaloNivelMs) return;
+  nivelMedido_ = true;
+  tNivel_ = ahora;
+
+  float n = hw_.nivelTolvaPct();
+  if (n < 0) {
+    if (invalidas_ < p_.lecturasNivel) invalidas_++;
+    if (invalidas_ >= p_.lecturasNivel && !avisoSinLectura_) {
+      avisoSinLectura_ = true;
+      nivelPct_ = -1.0f;              // desconocido: NO bloquea la alimentación
+      emitir(Alerta::SENSOR_NIVEL_SIN_LECTURA);
+    }
+    return;
+  }
+  invalidas_ = 0;
+  avisoSinLectura_ = false;
+  nivelPct_ = n;
+
+  bajas_ = (n < p_.nivelAlertaPct) ? (bajas_ < p_.lecturasNivel ? bajas_ + 1 : bajas_) : 0;
+  vacias_ = (n <= p_.nivelVacioPct) ? (vacias_ < p_.lecturasNivel ? vacias_ + 1 : vacias_) : 0;
+  noVacias_ = (n > p_.nivelVacioPct) ? (noVacias_ < p_.lecturasNivel ? noVacias_ + 1 : noVacias_) : 0;
+  altas_ = (n > p_.nivelRearmePct) ? (altas_ < p_.lecturasNivel ? altas_ + 1 : altas_) : 0;
+
+  if (vacias_ >= p_.lecturasNivel && alertaNivel_ != Alerta::COMIDA_AGOTADA) {
+    alertaNivel_ = Alerta::COMIDA_AGOTADA;
+    emitir(Alerta::COMIDA_AGOTADA);
+  } else if (altas_ >= p_.lecturasNivel && alertaNivel_ != Alerta::NINGUNA) {
+    alertaNivel_ = Alerta::NINGUNA;
+    emitir(Alerta::COMIDA_REPUESTA);
+  } else if (bajas_ >= p_.lecturasNivel && alertaNivel_ == Alerta::NINGUNA) {
+    alertaNivel_ = Alerta::COMIDA_BAJA;
+    emitir(Alerta::COMIDA_BAJA);
+  } else if (noVacias_ >= p_.lecturasNivel && alertaNivel_ == Alerta::COMIDA_AGOTADA) {
+    alertaNivel_ = Alerta::COMIDA_BAJA;   // repuesto un poco: vuelve a dispensar, sigue bajo
+    emitir(Alerta::COMIDA_BAJA);
+  }
+}
+
+void Controlador::logf(const char* fmt, ...) {
+  char buf[160];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, args);
+  va_end(args);
+  hw_.log(buf);
+}
+
+void Controlador::iniciar() {
+  tEstado_ = hw_.ahoraMs();
+  registroOk_ = hw_.cargarRaciones(nRegistro_, totales_, N_CLASES);
+  for (int c = 1; c < N_CLASES; c++) {
+    if (nRegistro_[c] > REGISTRO || p_.maxRacionesDia[c] > REGISTRO) registroOk_ = false;
+    if (nRegistro_[c] <= REGISTRO) {
+      for (uint8_t i = 0; i < nRegistro_[c]; i++) registro_[c][i] = tEstado_;
+      posRegistro_[c] = nRegistro_[c] % REGISTRO;
+    }
+    huboRacion_ = huboRacion_ || nRegistro_[c] > 0;
+  }
+  tUltimaRacion_ = tEstado_;
+  zonaArmada_ = !huboRacion_;
+  if (!registroOk_) {
+    cambiarA(Estado::ERROR_REGISTRO, "no se puede recuperar el historial: revisar NVS");
+    return;
+  }
+  if (!hw_.servoPreparado()) {
+    cambiarA(Estado::ERROR_SERVO, "PWM no inicializado");
+    return;
+  }
+  if (huboRacion_) hw_.log("Historial recuperado: plazos conservadores desde este arranque (sin RTC)");
+  tReintentoWifi_ = tEstado_;
+  if (!hw_.wifiConectado() && p_.usarDeteccionAutomatica) {
+    cambiarA(Estado::ERROR_WIFI, "sin Wi-Fi al iniciar");
+  } else if (!hw_.wifiConectado()) {
+    cambiarA(Estado::ESPERANDO, "sistema iniciado sin Wi-Fi (control local activo)");
+  } else {
+    cambiarA(Estado::ESPERANDO, "sistema iniciado");
+  }
+}
+
+void Controlador::cambiarA(Estado nuevo, const char* motivo) {
+  logf("[%s] -> [%s]%s%s", nombreEstado(estado_), nombreEstado(nuevo),
+       motivo ? " : " : "", motivo ? motivo : "");
+  estado_ = nuevo;
+  tEstado_ = hw_.ahoraMs();
+  tUltimoReintento_ = tEstado_;
+}
+
+bool Controlador::esErrorBloqueante() const {
+  // Requieren intervención humana (revisar mecánica / cableado del servo)
+  return estado_ == Estado::ERROR_SERVO || estado_ == Estado::ERROR_MECANISMO ||
+         estado_ == Estado::ERROR_REGISTRO;
+}
+
+bool Controlador::mascotaPresente(float d) const {
+  return d >= p_.distMinCm && d <= p_.distDeteccionCm;
+}
+
+void Controlador::volverAEsperar(const char* motivo) {
+  // La detección queda desarmada hasta que la zona esté libre ZONA_LIBRE_MS:
+  // evita que una mascota que se queda delante dispare ciclos en bucle.
+  zonaArmada_ = false;
+  contandoZonaLibre_ = false;
+  lecturasPresente_ = 0;
+  cambiarA(Estado::ESPERANDO, motivo);
+}
+
+bool Controlador::borrarErrores() {
+  if (!registroOk_ || !hw_.servoPreparado()) return false;
+  if (estado_ >= Estado::ERROR_WIFI) {
+    volverAEsperar("errores borrados manualmente");
+    return true;
+  }
+  return false;
+}
+
+// ----------------------------------------------------------------------------
+// Dispensación manual: TODA petición (panel, botón o serie) pasa por aquí.
+// Un pedido inválido o inoportuno se rechaza y el servo no se mueve.
+// ----------------------------------------------------------------------------
+Solicitud Controlador::evaluarSolicitud(uint8_t porciones) {
+  if (!p_.habilitada[CLASE_MANUAL]) return Solicitud::DESHABILITADA;
+  if (porciones < 1 || porciones > p_.maxPorcionesManual) return Solicitud::PORCIONES_INVALIDAS;
+  if (estado_ >= Estado::ERROR_WIFI) return Solicitud::ERROR_ACTIVO;
+  if (estado_ != Estado::ESPERANDO || porcionesPendientes_ > 0) return Solicitud::OCUPADO;
+  if (cooldownRestanteMs() > 0) return Solicitud::COOLDOWN;
+  char porque[64];
+  Solicitud v = verificarRacion(CLASE_MANUAL, porque, sizeof(porque));
+  if (v != Solicitud::ACEPTADA) return v;
+  if (p_.usarMonitorServo && hw_.voltajeServo() < p_.vservoMin) return Solicitud::SIN_ALIMENTACION_SERVO;
+  return Solicitud::ACEPTADA;
+}
+
+Solicitud Controlador::solicitarDispensacion(uint8_t porciones, Origen origen) {
+  Solicitud r = evaluarSolicitud(porciones);
+  logf("Pedido de dispensacion %s x%u: %s", nombreOrigen(origen), (unsigned)porciones, nombreSolicitud(r));
+  if (r == Solicitud::ACEPTADA) {
+    porcionesPendientes_ = porciones;
+    origenPendiente_ = origen;
+  }
+  return r;
+}
+
+// ----------------------------------------------------------------------------
+// Registro de raciones (ventana móvil de 24 h, sin reloj de tiempo real)
+// ----------------------------------------------------------------------------
+bool Controlador::registrarRacion(int clase) {
+  uint32_t ahora = hw_.ahoraMs();
+  registro_[clase][posRegistro_[clase]] = ahora;
+  posRegistro_[clase] = (posRegistro_[clase] + 1) % REGISTRO;
+  if (nRegistro_[clase] < REGISTRO) nRegistro_[clase]++;
+  totales_[clase]++;
+  huboRacion_ = true;
+  tUltimaRacion_ = ahora;
+  return guardarRegistro();
+}
+
+bool Controlador::guardarRegistro() {
+  if (!hw_.guardarRaciones(nRegistro_, totales_, N_CLASES)) {
+    registroOk_ = false;
+    cambiarA(Estado::ERROR_REGISTRO, "no se pudo guardar: motor bloqueado");
+    return false;
+  }
+  return true;
+}
+
+void Controlador::depurarRegistro() {
+  bool cambio = false;
+  const uint32_t ahora = hw_.ahoraMs();
+  for (int c = 1; c < N_CLASES; c++) {
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < nRegistro_[c]; i++) {
+      if (ahora - registro_[c][i] < MS_24H) registro_[c][n++] = registro_[c][i];
+    }
+    cambio = cambio || n != nRegistro_[c];
+    nRegistro_[c] = n;
+    posRegistro_[c] = n % REGISTRO;
+  }
+  if (cambio) guardarRegistro();
+}
+
+uint16_t Controlador::racionesUltimas24hTotal() const {
+  uint16_t n = 0;
+  for (int c = 1; c < N_CLASES; c++) n += racionesUltimas24h(c);
+  return n;
+}
+
+uint8_t Controlador::racionesUltimas24h(int clase) const {
+  if (clase < 1 || clase >= N_CLASES) return 0;
+  uint32_t ahora = hw_.ahoraMs();
+  uint8_t n = 0;
+  for (uint8_t i = 0; i < nRegistro_[clase]; i++) {
+    if (ahora - registro_[clase][i] < MS_24H) n++;  // resta sin signo: tolera desborde de millis()
+  }
+  return n;
+}
+
+uint32_t Controlador::cooldownRestanteMs() const {
+  if (!huboRacion_) return 0;
+  uint32_t trans = hw_.ahoraMs() - tUltimaRacion_;
+  return trans >= p_.cooldownGlobalMs ? 0 : p_.cooldownGlobalMs - trans;
+}
+
+Solicitud Controlador::verificarRacion(int clase, char* porque, int n) const {
+  if (!p_.habilitada[clase]) {
+    snprintf(porque, n, "clase deshabilitada");
+    return Solicitud::DESHABILITADA;
+  }
+  if (nRegistro_[clase] > 0) {
+    uint8_t ult = (posRegistro_[clase] + REGISTRO - 1) % REGISTRO;
+    uint32_t trans = hw_.ahoraMs() - registro_[clase][ult];
+    if (trans < p_.cooldownClaseMs[clase]) {
+      snprintf(porque, n, "cooldown de clase activo (%lu s restantes)",
+               (unsigned long)((p_.cooldownClaseMs[clase] - trans) / 1000));
+      return Solicitud::COOLDOWN;
+    }
+  }
+  if (racionesUltimas24h(clase) >= p_.maxRacionesDia[clase]) {
+    snprintf(porque, n, "limite diario alcanzado");
+    return Solicitud::LIMITE_DIARIO;
+  }
+  // Tolva vacía confirmada: girar el disco no entregaría nada y la ración se
+  // contaría mal. Si el nivel es DESCONOCIDO (sensor sin lectura) se alimenta igual.
+  if (p_.usarSensorNivel && alertaNivel_ == Alerta::COMIDA_AGOTADA) {
+    snprintf(porque, n, "tolva vacia: reponer alimento");
+    return Solicitud::TOLVA_VACIA;
+  }
+  return Solicitud::ACEPTADA;
+}
+
+// ----------------------------------------------------------------------------
+// Lazo principal
+// ----------------------------------------------------------------------------
+void Controlador::actualizar() {
+  const uint32_t ahora = hw_.ahoraMs();
+  if (!registroOk_) return;
+  depurarRegistro();
+  if (!registroOk_) return;
+
+  // --- Botón de reset de errores (cualquier estado de error) ---
+  if (estado_ >= Estado::ERROR_WIFI && hw_.botonResetPulsado()) {
+    borrarErrores();
+    return;
+  }
+
+  // --- Supervisión de energía (prioridad sobre todo salvo errores bloqueantes) ---
+  if (p_.usarMonitorBateria && !esErrorBloqueante() && estado_ != Estado::ERROR_ALIMENTACION) {
+    float vbat = hw_.voltajeBateria();
+    if (vbat < p_.vbatMin) {
+      logf("Bateria baja: %.2f V < %.2f V", vbat, p_.vbatMin);
+      cambiarA(Estado::ERROR_ALIMENTACION, "bateria insuficiente: no se dispensa");
+      return;
+    }
+  }
+
+  // --- Supervisión de Wi-Fi ---
+  // Modo automático: sin Wi-Fi no se puede clasificar -> ERROR_WIFI.
+  // Modo manual: la falta de Wi-Fi NO detiene nada (nivel, botón y servo siguen
+  // funcionando); solo se reintenta la conexión de fondo.
+  if (p_.usarDeteccionAutomatica) {
+    if (!esErrorBloqueante() && estado_ != Estado::ERROR_ALIMENTACION &&
+        estado_ != Estado::ERROR_WIFI && !hw_.wifiConectado()) {
+      cambiarA(Estado::ERROR_WIFI, "conexion perdida");
+      return;
+    }
+  } else if (!hw_.wifiConectado()) {
+    if (ahora - tReintentoWifi_ >= p_.wifiReintentoMs) {
+      tReintentoWifi_ = ahora;
+      hw_.reconectarWifi();
+    }
+  }
+
+  // Una pulsación corta solo vale en ESPERANDO; en cualquier otro estado se descarta
+  // (se consume igual para que no quede "guardada" y dispare más tarde).
+  if (p_.botonDispensa && hw_.botonDispensarPulsado() && estado_ == Estado::ESPERANDO) {
+    solicitarDispensacion(1, Origen::BOTON);
+  }
+
+  switch (estado_) {
+    // ------------------------------------------------------------------
+    case Estado::ESPERANDO: {
+      vigilarNivel(ahora);
+
+      // Pedido manual aceptado: se ejecuta ahora (ya fue validado al pedirlo).
+      if (porcionesPendientes_ > 0) {
+        uint16_t ciclos = (uint16_t)porcionesPendientes_ * p_.ciclos[CLASE_MANUAL];
+        if (ciclos < 1) ciclos = 1;
+        if (ciclos > p_.maxCiclosPorRacion) ciclos = p_.maxCiclosPorRacion;
+        ciclosManual_ = (uint8_t)ciclos;
+        ultimaClase_ = CLASE_MANUAL;
+        ultimoOrigen_ = origenPendiente_;
+        ultimasPorciones_ = porcionesPendientes_;
+        porcionesPendientes_ = 0;
+        char m[48];
+        snprintf(m, sizeof(m), "racion MANUAL x%u (%s)", (unsigned)ultimasPorciones_, nombreOrigen(ultimoOrigen_));
+        cambiarA(Estado::DOSIFICANDO, m);
+        break;
+      }
+      if (!p_.usarDeteccionAutomatica) break;   // sin sensor de presencia: nada más que hacer
+
+      float d = hw_.distanciaCm();
+      ultimaDistancia_ = d;
+      bool presente = mascotaPresente(d);
+      bool libre = (d < 0) || (d > p_.distLibreCm);
+
+      if (libre) {
+        if (!contandoZonaLibre_) {
+          contandoZonaLibre_ = true;
+          tZonaLibre_ = ahora;
+        } else if (!zonaArmada_ && ahora - tZonaLibre_ >= p_.zonaLibreMs) {
+          zonaArmada_ = true;
+          logf("Zona libre: deteccion rearmada");
+        }
+      } else {
+        contandoZonaLibre_ = false;
+      }
+
+      if (presente && zonaArmada_ && cooldownRestanteMs() == 0) {
+        if (++lecturasPresente_ >= p_.lecturasConfirmacion) {
+          lecturasPresente_ = 0;
+          char m[48];
+          snprintf(m, sizeof(m), "objeto a %.1f cm", d);
+          cambiarA(Estado::DETECTADO, m);
+        }
+      } else {
+        lecturasPresente_ = 0;
+      }
+      break;
+    }
+
+    // ------------------------------------------------------------------
+    case Estado::DETECTADO:
+      intentos_ = 0;
+      fallosCamara_ = 0;
+      cambiarA(Estado::CAPTURANDO, "solicitando captura");
+      break;
+
+    // ------------------------------------------------------------------
+    case Estado::CAPTURANDO:
+      // En las fotos siguientes de la misma visita no se vuelve a consultar /status de la
+      // cámara: si falla, el PC responde 502 (ERROR_CAMARA). Así cada foto tarda menos.
+      if (intentos_ > 0) {
+        cambiarA(Estado::PROCESANDO, "nueva foto de la misma visita");
+      } else if (hw_.camaraDisponible()) {
+        fallosCamara_ = 0;
+        cambiarA(Estado::PROCESANDO, "camara lista, clasificando en PC");
+      } else if (++fallosCamara_ >= 2) {
+        cambiarA(Estado::ERROR_CAMARA, "ESP32-CAM no responde");
+      }
+      break;
+
+    // ------------------------------------------------------------------
+    case Estado::PROCESANDO: {
+      RespuestaClasificacion r = hw_.clasificar((int)(ultimaDistancia_ + 0.5f));
+      strncpy(ultimoMotivo_, r.motivo, sizeof(ultimoMotivo_) - 1);
+      ultimoMotivo_[sizeof(ultimoMotivo_) - 1] = '\0';
+      if (r.tipo == TipoRespuesta::ERROR_CAMARA) {
+        cambiarA(Estado::ERROR_CAMARA, "el PC no pudo obtener la imagen");
+      } else if (r.tipo == TipoRespuesta::ERROR_SERVIDOR) {
+        cambiarA(Estado::ERROR_CLASIFICACION, "PC sin respuesta o respuesta invalida");
+      } else {
+        ultimaClase_ = r.clase;
+        ultimaConfianza_ = r.confianza;
+        char m[64];
+        snprintf(m, sizeof(m), "clase=%d conf=%.2f motivo=%s", r.clase, r.confianza, r.motivo);
+        cambiarA(Estado::CLASIFICADO, m);
+      }
+      break;
+    }
+
+    // ------------------------------------------------------------------
+    case Estado::CLASIFICADO: {
+      const int c = ultimaClase_;
+      if (c != CLASE_PERRO && c != CLASE_GATO) {
+        // Resultado no válido: NUNCA se dispensa. Se reintenta si sigue ahí.
+        if (intentos_ + 1 >= p_.maxIntentosClasificacion) {
+          volverAEsperar("clasificacion no valida: maximo de intentos");
+          break;
+        }
+        if (ahora - tEstado_ < p_.reintentoClasificacionMs) break;  // esperar
+        float d = hw_.distanciaCm();
+        ultimaDistancia_ = d;
+        if (!mascotaPresente(d)) {
+          volverAEsperar("clasificacion no valida y la mascota se fue");
+        } else {
+          intentos_++;
+          cambiarA(Estado::CAPTURANDO, "reintento de clasificacion");
+        }
+        break;
+      }
+
+      char porque[64];
+      if (verificarRacion(c, porque, sizeof(porque)) != Solicitud::ACEPTADA) {
+        volverAEsperar(porque);
+        break;
+      }
+      float d = hw_.distanciaCm();
+      ultimaDistancia_ = d;
+      if (!mascotaPresente(d)) {
+        volverAEsperar("la mascota abandono el area: no se dispensa");
+        break;
+      }
+      if (p_.usarMonitorServo && hw_.voltajeServo() < p_.vservoMin) {
+        cambiarA(Estado::ERROR_SERVO, "riel de alimentacion del servo ausente o bajo");
+        break;
+      }
+      ultimoOrigen_ = Origen::AUTOMATICO;
+      ultimasPorciones_ = 1;
+      cambiarA(Estado::DOSIFICANDO, c == CLASE_PERRO ? "racion PERRO" : "racion GATO");
+      break;
+    }
+
+    // ------------------------------------------------------------------
+    case Estado::DOSIFICANDO: {
+      uint8_t ciclos = ultimaClase_ == CLASE_MANUAL ? ciclosManual_ : p_.ciclos[ultimaClase_];
+      if (ciclos > p_.maxCiclosPorRacion) ciclos = p_.maxCiclosPorRacion;
+      if (!hw_.servoPreparado()) {
+        cambiarA(Estado::ERROR_SERVO, "PWM no inicializado");
+        break;
+      }
+      if (!registrarRacion(ultimaClase_)) break;
+      ResultadoDosis r = hw_.dosificar(ciclos);
+      intentosDosis_++;
+      ultimoResultado_ = r;
+      tUltimaDosis_ = hw_.ahoraMs();
+      if (r == ResultadoDosis::OK) {
+        nivelMedido_ = false;   // volver a medir la tolva enseguida
+        cambiarA(Estado::FINALIZADO, "racion entregada");
+      } else if (r == ResultadoDosis::SIN_ALIMENTACION_SERVO) {
+        cambiarA(Estado::ERROR_SERVO, "el servo perdio alimentacion");
+      } else {
+        // El intento ya quedó guardado antes de mover el motor.
+        cambiarA(Estado::ERROR_MECANISMO, "posible atasco del dosificador");
+      }
+      break;
+    }
+
+    // ------------------------------------------------------------------
+    case Estado::FINALIZADO:
+      volverAEsperar("bloqueo temporal activo");
+      break;
+
+    // ------------------------------------------------------------------
+    case Estado::ERROR_WIFI:
+      if (hw_.wifiConectado()) {
+        volverAEsperar("Wi-Fi recuperado");
+      } else if (ahora - tEstado_ >= p_.wifiReinicioMs) {
+        hw_.log("Sin Wi-Fi demasiado tiempo: reiniciando");
+        hw_.reiniciar();
+      } else if (ahora - tUltimoReintento_ >= p_.wifiReintentoMs) {
+        tUltimoReintento_ = ahora;
+        hw_.reconectarWifi();
+      }
+      break;
+
+    case Estado::ERROR_CAMARA:
+      if (ahora - tUltimoReintento_ >= p_.errorReintentoMs) {
+        tUltimoReintento_ = ahora;
+        if (hw_.camaraDisponible()) volverAEsperar("camara recuperada");
+      }
+      break;
+
+    case Estado::ERROR_CLASIFICACION:
+      if (ahora - tUltimoReintento_ >= p_.errorReintentoMs) {
+        tUltimoReintento_ = ahora;
+        if (hw_.servidorDisponible()) volverAEsperar("servidor de vision recuperado");
+      }
+      break;
+
+    case Estado::ERROR_ALIMENTACION:
+      if (!p_.usarMonitorBateria || hw_.voltajeBateria() >= p_.vbatMin + p_.vbatHisteresis) {
+        volverAEsperar("bateria recuperada");
+      }
+      break;
+
+    case Estado::ERROR_SERVO:
+    case Estado::ERROR_REGISTRO:
+    case Estado::ERROR_MECANISMO:
+      // Bloqueantes: solo salen con borrarErrores() (botón BOOT o comando RESET)
+      break;
+  }
+}
