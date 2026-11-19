@@ -9,6 +9,8 @@ ESP32-CAM <── HTTP ───────────────────
                                               └── SQLite local y cola de sincronización
 ```
 
+El [manual de software](docs/manual_software.md) reúne la instalación desde cero, los comandos, la configuración de Firebase y la conexión de las placas.
+
 ## Requisitos
 
 - Node.js 24 LTS (24.15 o posterior) y npm 11. Python 3.10+ para la referencia de contrato y para importar datos antiguos. Java 21 para el emulador de Firestore.
