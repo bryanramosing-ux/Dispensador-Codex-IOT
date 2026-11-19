@@ -5,8 +5,7 @@ flowchart LR
     P["Navegador (React)"] -->|"HTTPS, ID token"| N["Next.js · API y cliente MQTT"]
     P -->|"Inicio de sesión"| A["Firebase Authentication"]
     N -->|"Firebase Admin"| A
-    N --> F["Cloud Firestore"]
-    N --> S["Cloud Storage · JPEG"]
+    N --> F["Cloud Firestore · datos y JPEG"]
     N <-->|"MQTT/TLS"| M["Broker MQTT público con autenticación"]
     M <-->|"MQTT/TLS"| E["ESP32 DevKit"]
     M <-->|"MQTT/TLS"| C["ESP32-CAM"]
@@ -31,13 +30,13 @@ Prefijo común `dispensador/<MQTT_SITE_ID>`. Cada fila indica los permisos míni
 | `/camera/request` | Next.js | Cámara | `{"id":"uuid","expiresAt":epochSegundos}` |
 | `/camera/frame/<uuid>` | Cámara | Next.js, patrón `/camera/frame/+` | JPEG binario de hasta 400 000 bytes |
 
-Para `reset-errors` el campo `portions` lleva `null`. Configure la ACL de MQTTX en modo de solo lectura con los temas de telemetría, estado y alerta. Sustituya los marcadores `epochSegundos` por el sello de tiempo actual si está simulando datos en una instancia de pruebas. El controlador publica cada 15 s y cuando cambia su estado. La cámara publica cada 30 s y al cambiar la disponibilidad. El panel considera desconectado al ESP32 después de 50 s sin mensaje y a la ESP32-CAM después de 90 s.
+Para `reset-errors` el campo `portions` lleva `null`. Configure la ACL de MQTTX en modo de solo lectura con los temas de telemetría, estado y alerta. El controlador publica cada 15 s y cuando cambia su estado. La cámara publica cada 30 s y al cambiar la disponibilidad. El panel considera desconectado al ESP32 después de 50 s sin mensaje y a la ESP32-CAM después de 90 s.
 
 ## Comandos y cámara
 
 El servidor valida la confirmación y el rango de porciones. Firestore reserva el identificador del comando y el turno de envío en una transacción. Se emite una única orden MQTT con vencimiento de ocho segundos. El firmware descarta mensajes que vencieron y UUID recientes, y delega la ejecución a la máquina de estados existente. La placa conserva sus validaciones de tolva, cooldown, límite diario y estado del servo. Un acuse `ACEPTADA` confirma la solicitud. El resultado de la dosis llega en telemetría. Si se pierde el acuse, el comando queda con resultado desconocido y el historial permite verificarlo antes de solicitar otra dosis.
 
-La vista remota solicita JPEG sucesivos mientras está abierta. El monolito comparte las solicitudes de fotograma simultáneas. Las capturas manuales y periódicas guardan el JPEG en Storage y sus metadatos en Firestore. La ESP32-CAM conserva el HTTP local utilizado por el clasificador OpenCV opcional. El control por botón BOOT y monitor serie depende de la placa y funciona fuera de la conexión con el monolito.
+La vista remota solicita JPEG sucesivos mientras está abierta. El monolito comparte las solicitudes de fotograma simultáneas. Las capturas manuales y periódicas guardan en Firestore el JPEG y sus metadatos en dos documentos escritos de forma atómica. La ESP32-CAM conserva el HTTP local utilizado por el clasificador OpenCV opcional. El control por botón BOOT y monitor serie depende de la placa y funciona fuera de la conexión con el monolito.
 
 ## API
 

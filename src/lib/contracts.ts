@@ -75,6 +75,12 @@ export function deviceOnline(seen: number | undefined, kind: keyof typeof ONLINE
   return typeof seen === 'number' && seen <= nowMs && nowMs - seen < ONLINE_MS[kind];
 }
 
+export function isJpeg(payload: Uint8Array) {
+  return payload.length >= 4 && payload.length <= MAX_FRAME_BYTES &&
+    payload[0] === 0xff && payload[1] === 0xd8 &&
+    payload.at(-2) === 0xff && payload.at(-1) === 0xd9;
+}
+
 export function topics(siteId: string) {
   if (!/^[a-zA-Z0-9_-]{1,48}$/.test(siteId)) throw new Error('MQTT_SITE_ID inválido');
   const root = 'dispensador/' + siteId;
@@ -103,5 +109,4 @@ export type Dashboard = {
   camera: DeviceStatus<CameraData>;
   mqtt: boolean;
   autoCapture: number;
-  photosEnabled: boolean;
 };

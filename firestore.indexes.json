@@ -19,6 +19,7 @@
   ],
   "fieldOverrides": [
     { "collectionGroup": "telemetry", "fieldPath": "payload", "indexes": [] },
-    { "collectionGroup": "device_status", "fieldPath": "data", "indexes": [] }
+    { "collectionGroup": "device_status", "fieldPath": "data", "indexes": [] },
+    { "collectionGroup": "photo_images", "fieldPath": "bytes", "indexes": [] }
   ]
 }

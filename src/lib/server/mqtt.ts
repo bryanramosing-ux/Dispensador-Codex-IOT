@@ -1,8 +1,8 @@
 import 'server-only';
-import { readFileSync } from 'node:fs';
 import { connect, type MqttClient } from 'mqtt';
-import { alertData, cameraData, commandAck, dispenserData, envelope, isRecent, MAX_FRAME_BYTES, topics, uuid, type CommandAck } from '@/lib/contracts';
+import { alertData, cameraData, commandAck, dispenserData, envelope, isRecent, isJpeg, topics, uuid, type CommandAck } from '@/lib/contracts';
 import { storeAlert, storeSample } from './store';
+import { mqttSettings } from './mqtt-settings';
 
 const espSample = envelope(dispenserData);
 const cameraSample = envelope(cameraData);
@@ -17,12 +17,6 @@ function parseJson(payload: Buffer) {
   }
 }
 
-export function isJpeg(payload: Buffer) {
-  return payload.length >= 4 && payload.length <= MAX_FRAME_BYTES &&
-    payload[0] === 0xff && payload[1] === 0xd8 &&
-    payload.at(-2) === 0xff && payload.at(-1) === 0xd9;
-}
-
 class Broker {
   private readonly names: ReturnType<typeof topics>;
   private readonly client: MqttClient;
@@ -32,23 +26,14 @@ class Broker {
   private readonly commands = new Map<string, (value?: CommandAck) => void>();
   private readonly frames = new Map<string, (value?: Buffer) => void>();
 
-  constructor(url: URL) {
-    this.names = topics(process.env.MQTT_SITE_ID ?? '');
-    const username = process.env.MQTT_USERNAME;
-    const password = process.env.MQTT_PASSWORD;
-    if (!username || !password || url.username || url.password) {
-      throw new Error('Configure MQTT_USERNAME y MQTT_PASSWORD fuera de MQTT_URL.');
-    }
-    if (url.protocol !== 'mqtts:' && url.protocol !== 'wss:') throw new Error('MQTT_URL requiere TLS.');
-    const ca = process.env.MQTT_CA_FILE ? readFileSync(process.env.MQTT_CA_FILE) : undefined;
-    this.client = connect(url.toString(), {
-      username, password, ca, rejectUnauthorized: true,
-      clean: true, queueQoSZero: false, resubscribe: false, reconnectPeriod: 3_000, connectTimeout: 8_000,
-    });
+  constructor() {
+    const { url, names, subscriptions, options } = mqttSettings();
+    this.names = names;
+    this.client = connect(url, options);
     this.client.on('connect', () => {
-      const { telemetry, alert, ack, cameraStatus, cameraFrame } = this.names;
-      this.client.subscribe([telemetry, alert, ack, cameraStatus, cameraFrame + '+'], { qos: 0 }, (error, grants) => {
-        this.subscribed = !error && grants?.length === 5 && grants.every((grant) => grant.qos === 0);
+      this.client.subscribe(subscriptions, { qos: 0 }, (error, grants) => {
+        this.subscribed = !error && grants?.length === subscriptions.length &&
+          grants.every((grant) => grant.qos === 0);
         if (!this.subscribed) console.error('El broker MQTT rechazó una suscripción.');
       });
     });
@@ -130,6 +115,6 @@ class Broker {
 const state = globalThis as typeof globalThis & { dispenserBroker?: Broker };
 
 export function broker() {
-  if (!state.dispenserBroker && process.env.MQTT_URL) state.dispenserBroker = new Broker(new URL(process.env.MQTT_URL));
+  if (!state.dispenserBroker && process.env.MQTT_URL) state.dispenserBroker = new Broker();
   return state.dispenserBroker;
 }

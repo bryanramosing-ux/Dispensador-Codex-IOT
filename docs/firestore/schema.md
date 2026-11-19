@@ -1,25 +1,30 @@
 # Firestore del dispensador
 
-El SDK de Firebase Admin crea las colecciones a partir de la primera escritura. Use Cloud Firestore en modo nativo, base predeterminada `(default)`. El navegador consulta la API de Next.js. Las reglas bloquean el acceso directo de los SDK de cliente y del REST con tokens de usuarios. Firebase Admin utiliza los permisos IAM de su identidad. [Configuración de Firebase](../manual_software.md#2-crear-y-configurar-firebase).
+Firebase Admin crea las colecciones a partir de la primera escritura. Usa Cloud Firestore en modo nativo, base `(default)`. Las reglas bloquean el acceso directo de los SDK de cliente y el REST con tokens de usuarios. El navegador usa las rutas autenticadas de Next.js, y el servidor accede con su identidad de servicio. [Configuración de Firebase](../manual_software.md#2-crear-y-configurar-firebase).
 
 | Colección | Identificador | Campos principales | Escritura |
 |---|---|---|---|
 | `operators` | UID de Firebase Auth | `active` booleano, `updatedAt` Timestamp | `pnpm firebase:operator grant/revoke UID` o Firebase Console |
-| `device_status` | `esp32` y `camera` | `data` último estado, `sentAt` segundos Unix del dispositivo, `seen` ms Unix de recepción, `recordedAt` Timestamp | Mensajes MQTT de estado |
+| `device_status` | `esp32` y `camera` | `data` último estado, `sentAt` segundos Unix de la placa, `seen` ms Unix de recepción, `recordedAt` Timestamp | Mensajes MQTT de estado |
 | `telemetry` | ID generado | `deviceId`, `ts` ISO 8601, `recordedAt` Timestamp, `sentAt` segundos Unix, `payload` | Muestras aceptadas del controlador |
 | `history` | ID generado | `ts` ISO 8601, `recordedAt` Timestamp, `tipo`, `mensaje`, `detail` opcional | Conexión, estado, error, alerta, dosis, comando y foto |
 | `commands` | UUID de la petición | `operation`, `portions`, `requestedBy`, `recordedAt`, `expiresAt`, `lockUntil`, `state`, `finishedAt`, `result` opcional | Operaciones del panel |
 | `settings` | `dashboard`, `command_dispatch`, `last-mqtt-alert` | Intervalo `auto_capture_s`, turno de comando y última alerta para deduplicación | Panel y monolito |
-| `photos` | Nombre JPEG | `name`, `ts`, `size`, `recordedAt`, `objectPath`, `source` | Captura manual o automática |
+| `photos` | Nombre JPEG | `name`, `ts`, `size`, `recordedAt`, `source` | Metadatos de captura |
+| `photo_images` | Mismo nombre JPEG | `bytes` de Firestore, hasta 400 000 bytes | Imagen de la captura |
 
-`commands.state` puede ser `pending`, `accepted`, `rejected` u `outcome_unknown`. Tras una interrupción del proceso, un comando pendiente y vencido se considera de resultado desconocido al consultar el mismo UUID mediante la API. El bloqueo de envío vence automáticamente.
+`commands.state` puede ser `pending`, `accepted`, `rejected` u `outcome_unknown`. Una orden pendiente que venció durante una interrupción se registra como resultado desconocido al consultar el mismo UUID por la API. El bloqueo de envío vence automáticamente.
 
-Firestore ordena historial y fotos por `recordedAt` y por ID de documento. El índice para `history` filtrado por `tipo` se define en `firestore.indexes.json`. Se conservó el índice anterior de `events` para consultas históricas. Los mapas de telemetría y estado se excluyen de la indexación. Revise el volumen y la retención de muestras y fotos según sus necesidades operativas.
+Firestore ordena historial y fotos por `recordedAt` e ID de documento. El índice para filtrar `history` por `tipo` está en `firestore.indexes.json`. El índice de `events` sirve para consultas históricas. Los mapas de telemetría y el campo de bytes están desindexados.
 
-Para la galería, `objectPath` tiene el formato `gallery/<nombre>` en Cloud Storage. Los archivos se leen y borran desde la API autenticada. Un fallo entre la carga del JPEG y la escritura en Firestore puede dejar un objeto sin metadatos. Si se interrumpe una captura y la foto no aparece, compruebe el objeto en el bucket y que no exista el documento de la galería antes de borrarlo.
+La API guarda o borra el JPEG y sus metadatos de forma atómica. El listado de la galería consulta `photos` y lee el JPEG de `photo_images` al abrir o descargar una foto. La vista previa muestra fotogramas sin guardarlos. Cada captura guardada ocupa espacio del proyecto Firestore.
 
-## Datos de la versión anterior
+## Capturas existentes de la versión anterior
 
-Al apuntar al mismo proyecto, el panel puede leer el historial y las fotos sincronizadas por el backend anterior. Para que las fotos aparezcan con su imagen, conserve el bucket original y los documentos `photos` con `objectPath`. El nuevo código escribe los eventos en `history` y usa los mismos nombres de colección para las proyecciones compartidas. Los documentos anteriores de `events` y el marcador de sincronización quedan accesibles para consultas administrativas.
+Al reutilizar el mismo proyecto, el historial y los metadatos de fotos siguen disponibles. Si una foto antigua tiene `objectPath`, recupera su archivo JPEG desde el bucket anterior o una copia de respaldo y ejecuta:
 
-Si hay datos pendientes en el almacén SQLite anterior, mantenga una copia de su volumen y finalice la sincronización de la versión anterior antes de apagarla. Las fotos que solo existen en SQLite requieren exportarse desde el entorno anterior. Para una instalación nueva, las colecciones se llenan a medida que se autorizan operadores, se conectan las placas y se usa el panel.
+~~~bash
+pnpm firebase:import-photo NOMBRE_DEL_DOCUMENTO_FOTO RUTA_DEL_JPEG
+~~~
+
+Usa un JPEG de hasta 400 000 bytes. El comando usa el documento existente de `photos`, conserva sus datos históricos y agrega los bytes al documento correspondiente de `photo_images`. Repetir el comando con el mismo archivo es seguro. Si quedan datos pendientes en el volumen SQLite de una instalación anterior, conserva la copia y completa la sincronización de esa versión antes del cambio.

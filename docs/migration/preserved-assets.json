@@ -149,11 +149,6 @@
       "sha256": "ccceb265303db1326cd06f31b7e1d8fc5383794309535072a94ede391d79dbe7"
     },
     {
-      "source": "ESP32/Dispensador_ESP32/Energia.cpp",
-      "target": "firmware/ESP32/Dispensador_ESP32/Energia.cpp",
-      "sha256": "18986ab997fa9cde6b870267f64f18cc29a09fb71c57c2a8c62e0a3dd60ad40b"
-    },
-    {
       "source": "ESP32/Dispensador_ESP32/Energia.h",
       "target": "firmware/ESP32/Dispensador_ESP32/Energia.h",
       "sha256": "a2b4afd0235fb4eb24cf253162d2f301cea32eaa03de6c7c14c558f86f248dbf"
@@ -192,11 +187,6 @@
       "source": "ESP32/platformio.ini",
       "target": "firmware/ESP32/platformio.ini",
       "sha256": "6227fc8cd55bb0951376f38fdd98f41a1e2a63bd822519a088cda8ea62e6cb9a"
-    },
-    {
-      "source": "ESP32/test_host/qemu_autoprueba.sh",
-      "target": "firmware/ESP32/test_host/qemu_autoprueba.sh",
-      "sha256": "adfa8287c755b853e4475dbb5113d8657db1765d82e13bbbdaccc573912f5197"
     },
     {
       "source": "ESP32/test_host/stubs/Arduino.h",

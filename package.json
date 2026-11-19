@@ -12,9 +12,10 @@
     "lint": "eslint src scripts/*.ts tests",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
-    "test:integration": "tsx --test tests/*.integration.ts",
+    "check:connections": "node --env-file-if-exists=.env.local scripts/check-connections.ts",
     "verify:assets": "node scripts/verify-assets.mjs",
-    "firebase:operator": "node --env-file-if-exists=.env.local scripts/operator.ts"
+    "firebase:operator": "node --env-file-if-exists=.env.local scripts/operator.ts",
+    "firebase:import-photo": "node --env-file-if-exists=.env.local scripts/import-photo.ts"
   },
   "dependencies": {
     "firebase": "13.4.0",
@@ -30,7 +31,6 @@
     "@types/node": "^24.10.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
-    "aedes": "^1.1.0",
     "eslint": "^9.39.0",
     "eslint-config-next": "16.4.6",
     "tsx": "^4.21.0",

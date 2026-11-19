@@ -1,13 +1,11 @@
 import 'server-only';
 import { randomUUID } from 'node:crypto';
 import { Timestamp } from 'firebase-admin/firestore';
-import { COMMAND_TTL_SECONDS, captureInterval, deviceOnline, photoName, type Photo } from '@/lib/contracts';
-import { db, bucket } from './firebase';
+import { COMMAND_TTL_SECONDS, captureInterval, deviceOnline, isJpeg, photoName, type Photo } from '@/lib/contracts';
+import { db } from './firebase';
 import { HttpError } from './http';
 import { broker } from './mqtt';
 import { addHistory } from './store';
-
-export const photosEnabled = () => Boolean(process.env.FIREBASE_STORAGE_BUCKET);
 
 const state = globalThis as typeof globalThis & {
   dispenserFrame?: Promise<Buffer>;
@@ -32,7 +30,6 @@ export function frame() {
 }
 
 export async function capture(source: 'manual' | 'auto'): Promise<Photo> {
-  if (!photosEnabled()) throw new HttpError(503, 'Configura Cloud Storage para guardar fotos.');
   const bytes = await frame();
   const recordedAt = Timestamp.now();
   const ts = recordedAt.toDate().toISOString();
@@ -40,45 +37,58 @@ export async function capture(source: 'manual' | 'auto'): Promise<Photo> {
   const name = 'foto_' + date.replaceAll('-', '') + '_' + time.slice(0, 8).replaceAll(':', '') +
     '_' + randomUUID().replaceAll('-', '') + '.jpg';
   const photo = { name, ts, size: bytes.length };
-  const objectPath = 'gallery/' + name;
-  const object = bucket().file(objectPath);
-  await object.save(bytes, {
-    resumable: false,
-    metadata: { contentType: 'image/jpeg' },
-    preconditionOpts: { ifGenerationMatch: 0 },
-  });
-  const database = db();
-  const photoRef = database.collection('photos').doc(name);
+  const { database, metadata, image } = photoRefs(name);
   const batch = database.batch();
-  batch.create(photoRef, { ...photo, recordedAt, objectPath, source });
+  batch.create(metadata, { ...photo, recordedAt, source });
+  batch.create(image, { bytes });
   addHistory(batch, 'captura', 'Foto guardada · ' + (source === 'auto' ? 'automática' : 'manual'), recordedAt.toMillis(), { name });
-  try {
-    await batch.commit();
-  } catch (error) {
-    // A lost response can follow a successful commit. Check before removing the object.
-    const persisted = await photoRef.get().catch(() => undefined);
-    if (persisted?.exists) return photo;
-    if (persisted) await object.delete({ ignoreNotFound: true }).catch(() => undefined);
-    throw error;
-  }
+  await batch.commit();
   return photo;
 }
 
-export async function galleryObject(name: string) {
-  if (!photoName.test(name) || !photosEnabled()) throw new HttpError(404, 'No se encontró la foto.');
-  const ref = db().collection('photos').doc(name);
-  const photo = await ref.get();
-  if (photo.get('objectPath') !== 'gallery/' + name) throw new HttpError(404, 'No se encontró la foto.');
-  return { ref, file: bucket().file('gallery/' + name) };
+function photoRefs(name: string) {
+  if (!photoName.test(name)) throw new HttpError(404, 'No se encontró la foto.');
+  const database = db();
+  return {
+    database,
+    metadata: database.collection('photos').doc(name),
+    image: database.collection('photo_images').doc(name),
+  };
+}
+
+function requirePhoto(metadata: FirebaseFirestore.DocumentSnapshot, image: FirebaseFirestore.DocumentSnapshot) {
+  if (!metadata.exists) throw new HttpError(404, 'No se encontró la foto.');
+  if (!image.exists && metadata.get('objectPath')) {
+    throw new HttpError(409, 'Esta captura antigua requiere recuperar su JPEG e importarlo a Firestore.');
+  }
+  if (!image.exists) throw new HttpError(404, 'No se encontró la imagen.');
+}
+
+export async function galleryBytes(name: string) {
+  const { database, metadata, image } = photoRefs(name);
+  const [photo, file] = await database.getAll(metadata, image);
+  requirePhoto(photo, file);
+  const bytes: unknown = file.get('bytes');
+  if (!(bytes instanceof Uint8Array) || !isJpeg(bytes)) throw new HttpError(404, 'La imagen guardada es inválida.');
+  return Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+}
+
+export async function deletePhoto(name: string) {
+  const { database, metadata, image } = photoRefs(name);
+  await database.runTransaction(async (tx) => {
+    const [photo, file] = await tx.getAll(metadata, image);
+    requirePhoto(photo, file);
+    tx.delete(metadata);
+    tx.delete(image);
+  });
 }
 
 export async function changeInterval(seconds: number) {
-  if (seconds && !photosEnabled()) throw new HttpError(503, 'Configura Cloud Storage para guardar fotos.');
   await db().collection('settings').doc('dashboard').set({ auto_capture_s: seconds }, { merge: true });
 }
 
 export function startAutoCapture() {
-  if (state.dispenserAutoStarted || !process.env.FIREBASE_PROJECT_ID || !photosEnabled() || !broker()) return;
+  if (state.dispenserAutoStarted || !process.env.FIREBASE_PROJECT_ID || !broker()) return;
   state.dispenserAutoStarted = true;
   let interval = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;

@@ -1,6 +1,6 @@
-# Pruebas del monolito y del firmware
+# Verificación del dispensador
 
-## Verificar TypeScript, React y la API
+## Compilación y pruebas unitarias
 
 ~~~bash
 pnpm install --frozen-lockfile
@@ -11,31 +11,13 @@ pnpm build
 pnpm verify:assets
 ~~~
 
-Con Java 21 y OpenSSL instalados, ejecute la integración. Inicia el monolito compilado, autentica usuarios en Firebase emulado, transmite mensajes a través de un broker MQTT/TLS temporal y verifica operaciones y permisos en la API.
+GitHub Actions compila ambos firmwares con Arduino-ESP32 2.0.17 y 3.0.7 y ejecuta las pruebas unitarias del controlador. La primera carga de los firmwares y la operación de los sensores, el servo y la cámara se verifican en las placas de la instalación.
 
-~~~bash
-pnpm dlx firebase-tools@15.36.0 emulators:exec --only auth,firestore,storage --project demo-dispensador 'pnpm test:integration'
-~~~
+## Prueba de la instalación real
 
-La integración comprueba autorización de operador, reglas de Firestore, telemetría reciente, comandos idempotentes, ausencia de reenvío con resultado desconocido, paginación, fotogramas, guardado, borrado y captura automática.
-
-## Firmware
-
-~~~bash
-make -C firmware/ESP32/test_host
-arduino-cli lib install ArduinoJson@7.4.2
-arduino-cli compile --fqbn esp32:esp32:esp32doit-devkit-v1 firmware/ESP32/Dispensador_ESP32
-arduino-cli compile --fqbn esp32:esp32:esp32cam:PartitionScheme=huge_app firmware/ESP32_CAM/Camara_ESP32CAM
-~~~
-
-El flujo de CI compila ambas placas con Arduino-ESP32 2.0.17 y 3.0.7. La primera carga y los ensayos con servo, sensores y cámaras físicas requieren la instalación del usuario. [Guía de firmware y conexión](manual_software.md#5-compilar-y-cargar-el-firmware).
-
-## Verificación con placas y redes distintas
-
-1. Conecte las placas a Wi-Fi de 2,4 GHz con Internet. En MQTTX, compruebe que llegan datos y compare el prefijo con `MQTT_SITE_ID`.
-2. Desde un teléfono por datos móviles, abra el panel HTTPS e inicie sesión como operador. Revise estado, tolva e historial.
-3. Desde el panel, compruebe la vista previa de la cámara y, si habilitó Storage, guarde y descargue una foto. Desactive luego la captura automática si la activó para la prueba.
-4. En las condiciones de prueba del dispensador descritas en la documentación de hardware, solicite una porción y compare el acuse con el registro de la dosis. Compruebe que una segunda orden durante el cooldown se rechaza.
-5. Interrumpa el enlace MQTT y compruebe que el panel indica la pérdida de conexión y que el botón BOOT sigue disponible bajo las reglas locales del controlador. Restablezca la conexión y compruebe el siguiente latido.
-
-Para la calibración, la alimentación y las pruebas bajo carga, consulte la documentación existente. [Pruebas de calibración](../hardware/Documentation/calibration/calibracion.md).
+1. Completa `.env.local` y ejecuta `pnpm check:connections`. El comando verifica los servicios reales de Authentication y Firestore, y las suscripciones TLS del monolito al broker.
+2. Ejecuta `pnpm dev`. Inicia sesión con la cuenta de operador creada en Firebase. Comprueba que puedes abrir el panel y que un usuario sin documento activo en `operators` recibe un acceso denegado.
+3. Enciende ambas placas. Observa sus mensajes desde MQTTX. En el panel comprueba el nivel de la tolva y en Firebase Console revisa los documentos `device_status/esp32` y `device_status/camera`.
+4. Abre la vista previa de la cámara. Guarda y descarga una foto, y comprueba `photos` y `photo_images` en Firestore. La captura automática arranca desactivada en una instalación nueva.
+5. En las condiciones de operación y calibración del manual de armado, solicita **una porción**. Verifica la aceptación del comando, el movimiento y la entrada correspondiente en el historial. La protección de cooldown de la placa se puede comprobar en su telemetría sin disparar otra dosis.
+6. Con el panel publicado por HTTPS, abre su URL desde un teléfono con datos móviles. Comprueba la vista de estado y la cámara. [Guía de puesta en marcha](manual_software.md). [Manual de armado](../hardware/Documentation/manual_armado/Manual_de_Armado.md#6-secuencia-de-puesta-en-marcha).

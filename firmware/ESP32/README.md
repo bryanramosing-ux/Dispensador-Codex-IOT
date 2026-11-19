@@ -30,7 +30,7 @@ El segundo HC-SR04 de presencia está reservado en el firmware, pero `USAR_DETEC
 
 ## Compilar y cargar
 
-1. Copiar `secrets_ejemplo.h` como `secrets.h` y completar credenciales Wi-Fi, broker MQTT y CA según el [manual de software](../../docs/manual_software.md#4-configurar-el-broker-mqtt-y-mqttx).
+1. Copiar `secrets_ejemplo.h` como `secrets.h` y completar credenciales Wi-Fi, broker MQTT y CA según el [manual de software](../../docs/manual_software.md#3-configurar-el-broker-mqtt-y-mqttx).
 2. Revisar los GPIO de `config.h` y confirmar que corresponden a la placa física.
 3. Arduino IDE: abrir `Dispensador_ESP32.ino`, seleccionar la placa adecuada (confirmar variante) e instalar ArduinoJson 7 si el entorno lo requiere.
 4. PlatformIO: usar el `platformio.ini` de esta carpeta.

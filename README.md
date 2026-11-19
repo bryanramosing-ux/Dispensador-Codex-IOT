@@ -1,6 +1,6 @@
 # Dispensador IoT
 
-Panel web para monitorear la tolva, dispensar porciones, consultar el historial y ver la ESP32-CAM. La interfaz React y la API corren en un monolito Next.js con TypeScript. Firebase Authentication identifica a los operadores, Firestore guarda el estado y los eventos, y un broker MQTT con TLS conecta el monolito con las placas a través de Internet.
+Panel web para monitorear la tolva, dispensar porciones, consultar el historial y ver la ESP32-CAM. La interfaz React y la API corren en un monolito Next.js con TypeScript. Firebase Authentication identifica a los operadores, Firestore guarda el estado, los eventos y las fotos, y un broker MQTT con TLS conecta el monolito con las placas a través de Internet.
 
 ## Primer arranque
 
@@ -10,6 +10,7 @@ Para un proyecto ya configurado, abra la carpeta raíz y ejecute lo siguiente. E
 
 ~~~bash
 pnpm install --frozen-lockfile
+pnpm check:connections
 pnpm dev
 ~~~
 

@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFi.h>
+#include <esp_idf_version.h>
 #include <time.h>
 
 #include "config.h"
@@ -13,15 +14,6 @@
 #include "secrets_ejemplo.h"
 #endif
 
-// SIMULACION_QEMU: solo para arrancar el firmware en el emulador QEMU de Espressif,
-// que no emula la radio Wi-Fi. Nunca definirlo al compilar para la placa real.
-#ifdef SIMULACION_QEMU
-void Red::iniciar(const char*, const char*) { Serial.println("SIMULACION_QEMU: Wi-Fi desactivado"); }
-bool Red::conectado() { return false; }
-void Red::reconectar() { Serial.println("Wi-Fi: reintentando conexion... (simulado)"); }
-String Red::ip() { return String("0.0.0.0"); }
-int Red::rssi() { return 0; }
-#else
 void Red::iniciar(const char* ssid, const char* clave) {
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
@@ -52,7 +44,6 @@ void Red::reconectar() {
 
 String Red::ip() { return conectado() ? WiFi.localIP().toString() : String("0.0.0.0"); }
 int Red::rssi() { return conectado() ? WiFi.RSSI() : 0; }
-#endif
 
 bool Red::getSimple(const String& url, uint32_t timeoutMs) {
   if (!conectado()) return false;
@@ -111,14 +102,6 @@ RespuestaClasificacion Red::clasificar(int distanciaCm) {
   }  // cualquier otro caso queda como ERROR_SERVIDOR
   return r;
 }
-
-#ifdef SIMULACION_QEMU
-void Red::iniciarMqtt(const ManejadoresRed&) {}
-void Red::atender() {}
-bool Red::backendConocido() const { return false; }
-bool Red::publicar(const char*, const String&) { return false; }
-#else
-#include <esp_idf_version.h>
 
 namespace {
 const char COMANDO[] = "dispensador/" MQTT_SITE_ID "/esp32/command";
@@ -258,7 +241,6 @@ void Red::atender() {
   Mensaje mensaje;
   if (backendConocido() && xQueueReceive(comandos_, &mensaje, 0) == pdTRUE) manejarComando(mensaje.bytes);
 }
-#endif
 
 bool Red::enviarTelemetria(const String& json) {
   return publicar("dispensador/" MQTT_SITE_ID "/esp32/telemetry",

@@ -77,16 +77,16 @@ export function Camera({ user, status, refresh }: { user: User; status?: Dashboa
       {preview && ready && frameError && <p className="notice error" role="alert">{frameError}</p>}
       <div className="actions">
         <button disabled={!ready && !preview} onClick={() => { setImage(''); setFrameError(''); setPreview(!preview); }}>{preview ? 'Detener vista previa' : 'Abrir vista previa'}</button>
-        <button className="primary" disabled={!ready || saving || !status?.photosEnabled}
+        <button className="primary" disabled={!ready || saving}
           onClick={() => void update('camera/capture', { method: 'POST' }, 'Foto guardada en la galería.')}>Guardar foto</button>
       </div>
     </section>
     <section className="surface">
       <h2>Captura automática</h2>
-      <p>{status?.photosEnabled ? 'Usa 0 para desactivarla. Intervalo de 10 a 3600 segundos.' : 'Configura Cloud Storage para guardar fotos.'}</p>
+      <p>Usa 0 para desactivarla. Intervalo de 10 a 3600 segundos.</p>
       <form className="actions" onSubmit={configure} key={status?.autoCapture}>
         <label>Intervalo en segundos<input name="interval" type="number" min={0} max={3600} defaultValue={status?.autoCapture ?? 0} required /></label>
-        <button disabled={saving || !status?.photosEnabled}>Guardar intervalo</button>
+        <button disabled={saving || !status}>Guardar intervalo</button>
       </form>
     </section>
     {message && <p className="notice" role="status">{message}</p>}

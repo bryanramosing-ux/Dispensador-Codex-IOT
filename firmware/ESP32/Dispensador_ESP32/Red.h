@@ -3,12 +3,10 @@
 #include <Arduino.h>
 #include "Controlador.h"
 
-#ifndef SIMULACION_QEMU
 #include <atomic>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <mqtt_client.h>
-#endif
 
 struct ManejadoresRed {
   Solicitud (*dispensar)(uint8_t porciones) = nullptr;
@@ -36,7 +34,6 @@ class Red {
  private:
   bool getSimple(const String& url, uint32_t timeoutMs);
   bool publicar(const char* tema, const String& json);
-#ifndef SIMULACION_QEMU
   struct Mensaje {
     char bytes[224];
   };
@@ -51,5 +48,4 @@ class Red {
   uint32_t siguienteConexion_ = 0;
   char recientes_[8][37] = {};
   uint8_t proximoId_ = 0;
-#endif
 };

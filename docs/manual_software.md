@@ -1,10 +1,10 @@
-# Iniciar el dispensador IoT desde cero en Visual Studio Code
+# Puesta en marcha del dispensador IoT en Visual Studio Code
 
-## 1. Preparar el equipo
+La instalación usa un proyecto Firebase con **Authentication y Firestore**, un **broker MQTT con TLS** accesible por Internet y las dos placas. El monolito necesita la configuración web de Firebase, las credenciales de Firebase Admin y un usuario del broker. Cada placa usa sus propias credenciales MQTT y las de su red Wi-Fi.
 
-Instale Git, Visual Studio Code, Node.js 24 LTS (24.15 o superior dentro de la versión 24) y pnpm 11.25.0. Si su instalación de Node incluye Corepack, ejecute `corepack enable pnpm` y `corepack install --global pnpm@11.25.0`. También puede usar el instalador oficial de pnpm. [Instalación de pnpm](https://pnpm.io/installation).
+## 1. Preparar Visual Studio Code y pnpm
 
-Abra una terminal y ejecute:
+Instala Git, Visual Studio Code, Node.js 24 LTS (24.15 o superior dentro de la versión 24) y pnpm 11.25.0. Si Node incluye Corepack, puedes instalar pnpm con `corepack enable pnpm` y `corepack install --global pnpm@11.25.0`. [Instalación de pnpm](https://pnpm.io/installation).
 
 ~~~bash
 git clone --branch feat/next-monolito-mqtt-firebase https://github.com/bryanramosing-ux/Dispensador-Codex-IOT.git
@@ -15,105 +15,97 @@ pnpm --version
 pnpm install --frozen-lockfile
 ~~~
 
-Si su sistema no tiene el comando `code`, en Visual Studio Code seleccione **Archivo → Abrir carpeta**. Desde aquí ejecute los comandos en **Terminal → Nueva terminal**, en la carpeta raíz.
+También puedes abrir la carpeta desde **Archivo → Abrir carpeta**. Ejecuta los comandos en **Terminal → Nueva terminal** de VS Code, en la raíz del repositorio. Si ya tienes el repositorio, cámbiate a la rama indicada y ejecuta `git pull --ff-only`.
 
-Cree el archivo local de configuración. Use `cp .env.example .env.local` en macOS/Linux o `Copy-Item .env.example .env.local` en PowerShell. Mantenga `.env.local`, los certificados privados, las claves JSON y los archivos `secrets.h` fuera de Git.
+Crea `.env.local` desde `.env.example`. Usa `cp .env.example .env.local` en macOS/Linux o `Copy-Item .env.example .env.local` en PowerShell. Si tienes una configuración anterior, usa la plantilla actual y traslada los valores de tu proyecto Firebase, tu cuenta de servicio y tu broker.
 
 ## 2. Crear y configurar Firebase
 
-1. Cree o seleccione un proyecto en Firebase Console. En **Configuración del proyecto → Tus apps**, registre una aplicación web. Copie `apiKey`, `authDomain`, `projectId` y `appId` a las variables `NEXT_PUBLIC_FIREBASE_*` correspondientes. Use el mismo ID en `FIREBASE_PROJECT_ID`. [Firebase Console](https://console.firebase.google.com/).
-2. En **Authentication → Método de acceso**, active **Correo electrónico/contraseña**. En **Usuarios**, agregue la cuenta del operador y copie su UID. En **Dominios autorizados**, agregue su dominio HTTPS para producción y `localhost` si la configuración de su proyecto lo requiere para las pruebas.
-3. En **Firestore Database**, cree la base predeterminada `(default)` en modo de producción. Las colecciones se crean con las primeras escrituras. [Esquema de las colecciones](firestore/schema.md).
-4. Si usará la galería o la captura automática, active **Storage**, copie el nombre exacto del bucket sin `gs://` a `FIREBASE_STORAGE_BUCKET` y compruebe los requisitos de facturación del proyecto. Puede probar la vista previa con MQTT aunque el bucket esté vacío en la configuración.
-5. Configure las credenciales del servidor mediante Application Default Credentials (ADC). En desarrollo puede usar una cuenta de servicio y establecer `GOOGLE_APPLICATION_CREDENTIALS` con la ruta absoluta a su archivo JSON externo al repositorio. En un entorno gestionado use su identidad de servicio. Dicha identidad necesita acceso a resultados de Firebase Auth, lectura y escritura en Firestore y, si usa fotos, permisos sobre los objetos del bucket. [Firebase Admin SDK y ADC](https://firebase.google.com/docs/admin/setup).
+1. Crea un proyecto en Firebase Console. En **Firestore Database → Crear base de datos**, selecciona la base `(default)` en modo de producción. Los documentos y las colecciones se crean con las primeras escrituras. [Firebase Console](https://console.firebase.google.com/). [Esquema de Firestore](firestore/schema.md).
+2. En **Authentication → Método de acceso**, habilita **Correo electrónico/contraseña**. En **Usuarios**, crea tu cuenta y copia su **UID**. Para el desarrollo, revisa que `localhost` figure en **Dominios autorizados**. Al publicar el panel, agrega también su dominio.
+3. En **Configuración del proyecto → General → Tus apps**, registra una app web. Copia `apiKey`, `authDomain`, `projectId` y `appId` a las cuatro variables `NEXT_PUBLIC_FIREBASE_*`. Copia el mismo `projectId` en `FIREBASE_PROJECT_ID`.
+4. En **Configuración del proyecto → Cuentas de servicio → Firebase Admin SDK**, genera la clave JSON de la cuenta de servicio para tu equipo. Guarda ese archivo fuera del repositorio y pon su ruta absoluta en `GOOGLE_APPLICATION_CREDENTIALS`. En Windows puedes escribirla así:
 
-Publique las reglas y los índices en el proyecto elegido. Use una cuenta con permisos de despliegue y sustituya `ID_DE_TU_PROYECTO` en los comandos.
+   ~~~dotenv
+   GOOGLE_APPLICATION_CREDENTIALS="C:/ruta/privada/service-account.json"
+   ~~~
+
+   Si el servidor se ejecuta en Google Cloud con identidad de servicio, puede obtener sus credenciales del entorno. La identidad del servidor necesita consultar usuarios de Authentication y leer y escribir en Firestore. Los roles **Firebase Authentication Viewer** y **Cloud Datastore User** cubren esos accesos. Mantén el JSON, `.env.local` y los `secrets.h` fuera de Git. [Credenciales de Firebase Admin](https://firebase.google.com/docs/admin/setup).
+
+Publica las reglas y los índices con una cuenta que pueda desplegar en ese proyecto. Sustituye `TU_PROYECTO` por el ID de Firebase, no por el nombre visible de la consola.
 
 ~~~bash
 pnpm dlx firebase-tools@15.36.0 login
-pnpm dlx firebase-tools@15.36.0 deploy --only firestore --project ID_DE_TU_PROYECTO
+pnpm dlx firebase-tools@15.36.0 deploy --only firestore --project TU_PROYECTO
 ~~~
 
-Si habilitó Storage, ejecute también:
-
-~~~bash
-pnpm dlx firebase-tools@15.36.0 deploy --only storage --project ID_DE_TU_PROYECTO
-~~~
-
-Conceda acceso al operador con su UID de Firebase Authentication. El comando valida que exista la cuenta y crea `operators/{uid}` con `active: true`. También puede crear ese documento con un booleano `active` desde Firestore Console.
+Autoriza el UID que copiaste de **Authentication → Usuarios**. El comando comprueba que la cuenta exista y crea `operators/{uid}` con `active: true`. El correo y la contraseña de esa cuenta son los que usarás en el panel.
 
 ~~~bash
 pnpm firebase:operator grant UID_DEL_OPERADOR
 ~~~
 
-Para retirar el permiso, ejecute `pnpm firebase:operator revoke UID_DEL_OPERADOR`. El cambio se aplica en la siguiente solicitud a la API.
+Para retirar el permiso de una cuenta, ejecuta `pnpm firebase:operator revoke UID_DEL_OPERADOR`.
 
-## 3. Ejecutar Next.js
+## 3. Configurar el broker MQTT y MQTTX
+
+1. Crea un broker administrado, por ejemplo en EMQX Cloud, o usa un broker propio con DNS público y TLS. Obtén el hostname, el puerto TLS (suele ser 8883) y la CA correspondiente. Habilita MQTT 3.1.1, autenticación y paquetes de al menos 512 kB para los fotogramas. [EMQX Cloud](https://www.emqx.com/en/cloud).
+2. Crea usuarios distintos para el monolito, el DevKit, la cámara y MQTTX. Asigna los permisos de publicación y suscripción de cada uno siguiendo la tabla. El usuario de MQTTX puede quedar en modo de solo lectura para observar la instalación. [Temas y permisos MQTT](arquitectura_local.md#temas-mqtt-y-acl).
+3. Completa `MQTT_URL` con la URL TLS del broker (formato `mqtts://HOST:8883`), `MQTT_USERNAME`, `MQTT_PASSWORD` y `MQTT_SITE_ID` en `.env.local`. Si el broker usa una CA privada, indica la ruta del PEM en `MQTT_CA_FILE`.
+4. En MQTTX Desktop, crea una conexión con el host y puerto del broker, el usuario de diagnóstico y **SSL/TLS** activo. Si corresponde, importa el certificado CA. Suscríbete a `dispensador/TU_SITIO/esp32/telemetry`, `dispensador/TU_SITIO/esp32/alert` y `dispensador/TU_SITIO/camera/status`, con el mismo valor de `MQTT_SITE_ID`. [MQTTX Desktop](https://mqttx.app/).
+
+## 4. Comprobar servicios y abrir el panel
 
 ~~~bash
+pnpm check:connections
 pnpm dev
 ~~~
 
-Abra [http://localhost:3000](http://localhost:3000) e inicie sesión. El panel puede abrirse desde **Terminal → Ejecutar tarea → Dispensador: desarrollo**. Si aún no cargó las placas, el controlador y la cámara figuran sin conexión. Reinicie `pnpm dev` tras editar `.env.local`.
+`pnpm check:connections` debe mostrar **OK** para Firebase Authentication, Firestore y el broker MQTT/TLS. Comprueba acceso y suscripciones de la cuenta de servicio y del monolito. La prueba del usuario final se hace iniciando sesión en el panel. Abre [http://localhost:3000](http://localhost:3000) y usa el correo y la contraseña del operador. Hasta que las placas envíen su primer mensaje, aparecerán sin conexión.
 
-## 4. Configurar el broker MQTT y MQTTX
+| Si falla | Comprueba |
+|---|---|
+| `pnpm check:connections` falla en Authentication o Firestore | Los IDs de proyecto coinciden, la ruta del JSON existe y su cuenta de servicio tiene los permisos indicados. Firestore debe estar creado como `(default)`. |
+| El login rechaza al operador | Correo/contraseña está habilitado, el usuario existe en ese proyecto y su UID tiene `operators/{uid}.active = true`. |
+| Falla MQTT/TLS | Host y puerto, usuario y contraseña, cadena CA, DNS y las ACL de la tabla de temas. Las placas también necesitan que la red permita el puerto del broker y NTP. |
+| Falla el historial filtrado con un mensaje de índice | El comando de despliegue de Firestore se ejecutó en ese proyecto y el índice `history` por `tipo` ya terminó de construirse. |
 
-1. Cree un broker MQTT con TLS accesible por Internet, por ejemplo un despliegue administrado de EMQX. Obtenga el nombre DNS, el puerto MQTT TLS (normalmente 8883) y el certificado CA de la cadena. Habilite MQTT 3.1.1, desactive las conexiones anónimas y permita mensajes de al menos 512 kB para la cámara.
-2. Cree usuarios distintos para el monolito, el controlador, la cámara y MQTTX. Configure permisos de publicación y suscripción por tema. Para MQTTX puede usar un usuario de solo lectura. [Temas y permisos MQTT](arquitectura_local.md#temas-mqtt-y-acl).
-3. En `.env.local`, defina `MQTT_URL=mqtts://TU_BROKER:8883`, `MQTT_USERNAME`, `MQTT_PASSWORD` y `MQTT_SITE_ID`. Use un identificador alfanumérico con guiones o guiones bajos, de hasta 48 caracteres. Si usa una CA privada, indique el archivo PEM en `MQTT_CA_FILE`. Reinicie Next.js.
-4. Instale MQTTX Desktop. Cree una conexión MQTT 3.1.1 con el host, puerto y usuario de diagnóstico, active **SSL/TLS** y valide el certificado del broker. Si la CA es privada, importe el certificado CA en la conexión. [MQTTX Desktop](https://mqttx.app/).
-5. En MQTTX, suscríbase a `dispensador/TU_SITIO/esp32/telemetry`, `dispensador/TU_SITIO/esp32/alert` y `dispensador/TU_SITIO/camera/status`. Sustituya `TU_SITIO` por `MQTT_SITE_ID`. Los mensajes aparecerán al iniciar las placas.
+Reinicia `pnpm dev` después de editar `.env.local`. La tarea **Dispensador: desarrollo** de VS Code ejecuta el mismo comando.
 
 ## 5. Compilar y cargar el firmware
 
-Abra cada sketch en Arduino IDE o su proyecto PlatformIO en VS Code. Para Arduino IDE use Arduino-ESP32 3.0.7 y ArduinoJson 7.4.2 en ambas placas. Seleccione **DOIT ESP32 DEVKIT V1** para el controlador y **AI Thinker ESP32-CAM** con partición **Huge APP** para la cámara. Los archivos de red son independientes.
+1. En Arduino IDE, agrega el [índice oficial de placas Arduino-ESP32](https://espressif.github.io/arduino-esp32/package_esp32_index.json) en **Preferencias → URLs adicionales del gestor de placas**. Instala **esp32** de Espressif versión **3.0.7** y **ArduinoJson 7.4.2** en el Gestor de bibliotecas.
+2. Para el controlador abre `firmware/ESP32/Dispensador_ESP32/Dispensador_ESP32.ino` y selecciona **DOIT ESP32 DEVKIT V1**. Para la cámara abre `firmware/ESP32_CAM/Camara_ESP32CAM/Camara_ESP32CAM.ino` y selecciona **AI Thinker ESP32-CAM** con partición **Huge APP**.
+3. Copia `secrets_ejemplo.h` a `secrets.h` dentro de **cada** sketch. Configura el Wi-Fi de 2,4 GHz, el host MQTT sin `mqtts://`, el puerto, el usuario y la contraseña de esa placa. Usa la misma `MQTT_SITE_ID` del monolito. Deja las direcciones IP locales vacías para DHCP.
+4. Pega la CA proporcionada por el broker en `MQTT_CA_PEM`. En C++, deja los caracteres `\n` al final de cada línea del certificado.
 
-1. Copie cada `secrets_ejemplo.h` a `secrets.h` dentro de la carpeta de su sketch. Complete Wi-Fi 2,4 GHz, host MQTT sin esquema, puerto, usuario y contraseña de la placa. Use el mismo `MQTT_SITE_ID` que Next.js y use DHCP para despliegues en distintas redes.
-2. Pegue el certificado raíz del broker en `MQTT_CA_PEM`. Cada línea del ejemplo siguiente termina con los dos caracteres `\n` en el archivo C++. La placa necesita Internet, resolución DNS y acceso a NTP para validar TLS y rechazar órdenes vencidas.
+   ~~~cpp
+   #define MQTT_CA_PEM \
+     "-----BEGIN CERTIFICATE-----\n" \
+     "CONTENIDO_BASE64_DE_LA_CA\n" \
+     "-----END CERTIFICATE-----\n"
+   ~~~
 
-~~~cpp
-#define MQTT_CA_PEM \
-  "-----BEGIN CERTIFICATE-----\n" \
-  "CONTENIDO_BASE64_DE_LA_CA\n" \
-  "-----END CERTIFICATE-----\n"
-~~~
+5. Carga y verifica cada placa por separado. Abre el monitor serie a **115200 baudios**. En el controlador, `RED` muestra Wi-Fi y MQTT, y `ESTADO` muestra la telemetría. En la ESP32-CAM, busca el mensaje **MQTT cámara conectado**. Confirma los temas en MQTTX y el estado en el panel. [Controlador ESP32](../firmware/ESP32/README.md). [Programación de la ESP32-CAM](../firmware/ESP32_CAM/README.md).
 
-3. Cargue los sketches y abra el monitor serie a 115200 baudios. Para el controlador, `RED` muestra Wi-Fi y MQTT, y `ESTADO` muestra la telemetría. Compruebe el estado de ambas placas en el panel y los mensajes en MQTTX.
-4. Para una verificación remota real, conecte las placas a Wi-Fi con Internet y abra el panel publicado desde un móvil usando datos móviles. Siga el procedimiento de operación y calibración al probar el actuador. [Prueba desde dos redes](pruebas.md). [Manuales de hardware](../hardware/Documentation/).
+## 6. Montar y verificar el equipo
 
-## 6. Probar el software sin Firebase real
+Consulta las secciones de **componentes, alimentación y conexiones de señales** del manual de armado. Haz la comprobación de tensiones y polaridad antes de conectar los módulos. Usa los GPIO y el divisor de tensión indicados en el manual. [Manual de armado](../hardware/Documentation/manual_armado/Manual_de_Armado.md#2-componentes).
 
-Instale Java 21 para el emulador Firestore. Inicie los emuladores en una terminal y manténgala abierta.
-
-~~~bash
-pnpm dlx firebase-tools@15.36.0 emulators:start --only auth,firestore,storage --project demo-dispensador
-~~~
-
-En `.env.local` configure estos valores para el entorno local. El broker puede quedar vacío si solo quiere probar el login.
-
-~~~dotenv
-FIREBASE_PROJECT_ID=demo-dispensador
-FIREBASE_STORAGE_BUCKET=demo-dispensador.appspot.com
-NEXT_PUBLIC_FIREBASE_PROJECT_ID=demo-dispensador
-NEXT_PUBLIC_FIREBASE_API_KEY=demo-local
-NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=demo-dispensador.firebaseapp.com
-NEXT_PUBLIC_FIREBASE_APP_ID=demo-local
-NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_URL=http://127.0.0.1:9099
-FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099
-FIRESTORE_EMULATOR_HOST=127.0.0.1:8080
-FIREBASE_STORAGE_EMULATOR_HOST=127.0.0.1:9199
-~~~
-
-En [la interfaz local de Firebase](http://127.0.0.1:4000/auth), cree un usuario de prueba, copie su UID y ejecute `pnpm firebase:operator grant UID_DEL_OPERADOR`. Luego ejecute `pnpm dev` e ingrese con esa cuenta. Para la integración automatizada, consulte [Pruebas](pruebas.md).
+1. Comprueba primero el controlador, la lectura del HC-SR04 y la cámara. Calibra la tolva vacía y llena según el procedimiento del repositorio. En el panel revisa la telemetría, abre la cámara y guarda una foto. Confirma que aparecen documentos en `device_status`, `telemetry`, `photos` y `photo_images`.
+2. Con la alimentación apagada, conecta el MG995 a su rama de potencia con tierra común según el esquema. Sigue la prueba inicial del mecanismo y calibra las porciones con el procedimiento de pesaje. [Calibración del dispensador](../hardware/Documentation/calibration/calibracion.md).
+3. Cuando el equipo esté calibrado, envía una orden de **una porción** desde el panel. Comprueba el acuse del ESP32 y luego el resultado de la dosis en **Historial**. Si falta el acuse, consulta el historial y el estado físico antes de pedir otra porción.
+4. Repite la prueba de acceso desde otra red después de publicar el panel. Un teléfono con datos móviles permite comprobar que el panel abre y recibe telemetría mientras las placas siguen en su Wi-Fi. [Secuencia de verificación](pruebas.md#prueba-de-la-instalación-real).
 
 ## 7. Publicar el panel para usarlo desde otra red
 
-Prepare un servidor o contenedor con un proceso Node.js persistente y salida hacia el broker MQTT y Firebase. Use las credenciales de producción y quite las variables de emulación. Establezca las variables `NEXT_PUBLIC_*` antes de compilar y las de servidor al iniciar. Configure HTTPS con el proxy de su plataforma y mantenga la instancia en ejecución para recibir telemetría y realizar la captura automática.
+Instala el monolito en un servidor o contenedor que mantenga un proceso Node.js activo. Configura la salida hacia Firebase y el broker, y HTTPS en el dominio del panel. Define las variables `NEXT_PUBLIC_*` antes de compilar y las credenciales privadas al iniciar el proceso.
 
 ~~~bash
 pnpm install --frozen-lockfile
+pnpm check:connections
 pnpm build
 pnpm start --hostname 0.0.0.0
 ~~~
 
-Abra la URL HTTPS desde el teléfono o el computador. Las placas se conectan al broker mediante conexiones salientes. Para diagnosticar un fallo, revise por separado la conexión del panel a Firebase, la conexión del monolito al broker y los mensajes de cada placa. [Arquitectura y diagnóstico](arquitectura_local.md).
+El dominio HTTPS sirve el panel. Las placas llegan al broker mediante conexiones salientes. [Arquitectura y diagnóstico](arquitectura_local.md).

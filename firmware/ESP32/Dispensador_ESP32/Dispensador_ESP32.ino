@@ -412,22 +412,6 @@ void setup() {
   red.iniciarMqtt(manejadores);
   controlador.iniciar();
   Serial.println(F("Escriba AYUDA en el monitor serie para ver los comandos."));
-#ifdef SIMULACION_QEMU
-  // Autoprueba para el emulador (ver ESP32/test_host/qemu_autoprueba.sh)
-  const char* pruebas[] = {"AYUDA", "ESTADO", "RED", "ENERGIA", "SERVO 1200", "SERVO 3000", "CICLO 1",
-                           "NIVEL", "DISPENSAR 9", "DISPENSAR 1"};
-  for (const char* p : pruebas) {
-    Serial.printf("> %s\n", p);
-    procesarComando(String(p));
-  }
-  // El pedido aceptado se ejecuta en el lazo: ESPERANDO -> DOSIFICANDO -> FINALIZADO -> ESPERANDO
-  for (uint8_t i = 0; i < 4; i++) controlador.actualizar();
-  Serial.println("> DISPENSAR 1 (repetido: debe rechazarse por cooldown)");
-  procesarComando(String("DISPENSAR 1"));
-  Serial.println("> ESTADO");
-  procesarComando(String("ESTADO"));
-  Serial.println(F("AUTOPRUEBA_FIN"));
-#endif
 }
 
 void loop() {

@@ -1,7 +1,7 @@
 'use client';
 
 import { getApps, initializeApp } from 'firebase/app';
-import { connectAuthEmulator, getAuth, type Auth, type User } from 'firebase/auth';
+import { getAuth, type Auth, type User } from 'firebase/auth';
 
 let auth: Auth | undefined;
 
@@ -18,8 +18,6 @@ export function browserAuth() {
   }
   const app = getApps().find((candidate) => candidate.name === '[DEFAULT]') ?? initializeApp(config);
   auth = getAuth(app);
-  const emulator = process.env.NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_URL;
-  if (emulator) connectAuthEmulator(auth, emulator);
   return auth;
 }
 
