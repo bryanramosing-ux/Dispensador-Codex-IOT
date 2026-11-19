@@ -24,7 +24,7 @@ Crea `.env.local` desde `.env.example`. Usa `cp .env.example .env.local` en macO
 1. Crea un proyecto en Firebase Console. En **Firestore Database → Crear base de datos**, selecciona la base `(default)` en modo de producción. Los documentos y las colecciones se crean con las primeras escrituras. [Firebase Console](https://console.firebase.google.com/). [Esquema de Firestore](firestore/schema.md).
 2. En **Authentication → Método de acceso**, habilita **Correo electrónico/contraseña**. En **Usuarios**, crea tu cuenta y copia su **UID**. Para el desarrollo, revisa que `localhost` figure en **Dominios autorizados**. Al publicar el panel, agrega también su dominio.
 3. En **Configuración del proyecto → General → Tus apps**, registra una app web. Copia `apiKey`, `authDomain`, `projectId` y `appId` a las cuatro variables `NEXT_PUBLIC_FIREBASE_*`. Copia el mismo `projectId` en `FIREBASE_PROJECT_ID`.
-4. En **Configuración del proyecto → Cuentas de servicio → Firebase Admin SDK**, genera la clave JSON de la cuenta de servicio para tu equipo. Guarda ese archivo fuera del repositorio y pon su ruta absoluta en `GOOGLE_APPLICATION_CREDENTIALS`. En Windows puedes escribirla así:
+4. En **Configuración del proyecto → Cuentas de servicio → Firebase Admin SDK**, genera la clave JSON de la cuenta de servicio para tu equipo. Guarda ese archivo fuera del repositorio y pon su ruta absoluta en `GOOGLE_APPLICATION_CREDENTIALS`. En Windows, escribe la ruta con barras como en el ejemplo.
 
    ~~~dotenv
    GOOGLE_APPLICATION_CREDENTIALS="C:/ruta/privada/service-account.json"
@@ -32,7 +32,7 @@ Crea `.env.local` desde `.env.example`. Usa `cp .env.example .env.local` en macO
 
    Si el servidor se ejecuta en Google Cloud con identidad de servicio, puede obtener sus credenciales del entorno. La identidad del servidor necesita consultar usuarios de Authentication y leer y escribir en Firestore. Los roles **Firebase Authentication Viewer** y **Cloud Datastore User** cubren esos accesos. Mantén el JSON, `.env.local` y los `secrets.h` fuera de Git. [Credenciales de Firebase Admin](https://firebase.google.com/docs/admin/setup).
 
-Publica las reglas y los índices con una cuenta que pueda desplegar en ese proyecto. Sustituye `TU_PROYECTO` por el ID de Firebase, no por el nombre visible de la consola.
+Publica las reglas y los índices con una cuenta que pueda desplegar en ese proyecto. Sustituye `TU_PROYECTO` por el ID que aparece en **Configuración del proyecto → General**.
 
 ~~~bash
 pnpm dlx firebase-tools@15.36.0 login

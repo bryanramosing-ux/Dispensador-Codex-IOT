@@ -21,7 +21,7 @@ La API guarda o borra el JPEG y sus metadatos de forma atómica. El listado de l
 
 ## Capturas existentes de la versión anterior
 
-Al reutilizar el mismo proyecto, el historial y los metadatos de fotos siguen disponibles. Si una foto antigua tiene `objectPath`, recupera su archivo JPEG desde el bucket anterior o una copia de respaldo y ejecuta:
+Al reutilizar el mismo proyecto, el historial y los metadatos de fotos siguen disponibles. Si una foto antigua tiene `objectPath`, recupera su archivo JPEG desde el bucket anterior o una copia de respaldo. Luego ejecuta el comando de importación.
 
 ~~~bash
 pnpm firebase:import-photo NOMBRE_DEL_DOCUMENTO_FOTO RUTA_DEL_JPEG
