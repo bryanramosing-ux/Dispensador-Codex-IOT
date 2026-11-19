@@ -1,10 +1,10 @@
-# ESP32-CAM AI-Thinker — Cámara de red local
+# ESP32-CAM AI-Thinker — Cámara del dispensador
 
 ## Responsabilidad
 
-La ESP32-CAM captura imágenes JPEG y ofrece un endpoint de stream MJPEG. No clasifica mascotas ni controla el servomotor. En la versión actual el dashboard consume el stream a través del backend local.
+La ESP32-CAM publica su estado y responde con fotogramas JPEG por MQTT/TLS. El panel solicita estos fotogramas a través del monolito. El clasificador externo puede acceder al HTTP local de la cámara.
 
-## Endpoints
+## Endpoints HTTP para la red local
 
 | Ruta | Respuesta |
 |---|---|
@@ -12,7 +12,7 @@ La ESP32-CAM captura imágenes JPEG y ofrece un endpoint de stream MJPEG. No cla
 | `GET /capture` | Una fotografía JPEG nueva |
 | `GET /stream` | Stream MJPEG multipart de duración limitada por petición |
 
-El stream implementado envía un número finito de cuadros por conexión y luego termina; el backend/dashboard puede volver a conectarse. No equivale a un servicio de video ilimitado ni garantiza una tasa de cuadros fija. La captura y el stream comparten el recurso de cámara y deben probarse con un solo cliente inicialmente.
+El stream implementado envía un número finito de cuadros por conexión y luego termina; el cliente local puede volver a conectarse. No equivale a un servicio de video ilimitado ni garantiza una tasa de cuadros fija. La captura y el stream comparten el recurso de cámara y deben probarse con un solo cliente inicialmente.
 
 ## Hardware
 
@@ -30,9 +30,9 @@ La cámara puede reiniciarse si la alimentación cae. No desactive el detector b
 2. Con USB-TTL: 5V a 5V, GND a GND, TX/RX cruzados a U0R/U0T.
 3. GPIO0 a GND solo durante la carga; retirar el puente y reiniciar para ejecución normal.
 4. Seleccionar AI Thinker ESP32-CAM, habilitar PSRAM y elegir partición compatible con el tamaño de firmware.
-5. Copiar `secrets_ejemplo.h` a `secrets.h` y completar la red.
-6. Configurar IP estática/reservada en `config.h` o usar DHCP de forma coherente con el backend.
+5. Copiar `secrets_ejemplo.h` a `secrets.h` y completar Wi-Fi y MQTT/TLS. Instalar ArduinoJson 7.4.2.
+6. Usar DHCP por defecto. Si se usa OpenCV local, reservar una IP o asignarla en `secrets.h`.
 
 ## Prueba
 
-Con la placa conectada a una fuente estable y a la misma Wi-Fi que el PC, comprobar primero `/status`, después `/capture` y finalmente `/stream`. No considerar verificado el stream solo porque la página del dashboard cargue: probarlo con la cámara física.
+Para el panel remoto, compruebe que aparezca en línea y abra la vista previa desde otra red. Para OpenCV local, compruebe `/status`, `/capture` y `/stream` desde el PC de visión. [Manual de software](../../docs/manual_software.md).

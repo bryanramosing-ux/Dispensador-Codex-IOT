@@ -2,20 +2,20 @@
 
 ## Responsabilidad en la versión actual
 
-El ESP32 controla el MG995, mide el nivel de alimento de la tolva con **un HC-SR04** y comunica telemetría/comandos con el backend local. La detección automática de presencia y la clasificación de mascotas están desactivadas en la configuración actual.
+El ESP32 controla el MG995, mide el nivel de alimento de la tolva con **un HC-SR04** y publica telemetría y recibe comandos a través de un broker MQTT con TLS. La detección automática de presencia y la clasificación de mascotas están desactivadas en la configuración actual.
 
 ## Archivos principales
 
 | Archivo | Responsabilidad |
 |---|---|
-| `Dispensador_ESP32.ino` | `setup()`, `loop()`, endpoints y comandos serie |
+| `Dispensador_ESP32.ino` | `setup()`, `loop()`, telemetría y comandos serie |
 | `config.h` | Pines, umbrales, tiempos y dosis provisionales |
 | `Controlador.*` | Máquina de estados |
 | `Ultrasonico.*` | Lectura ultrasónica |
 | `Dosificador.*` | PWM del MG995 y ciclos del disco |
 | `NivelTolva.*` | Nivel de tolva, calibración VACIO/LLENO y porcentaje de volumen |
 | `NivelGeometria.h` | Relación geométrica altura/volumen |
-| `Red.*` | Wi-Fi, telemetría y comunicación con backend |
+| `Red.*` | Wi-Fi, TLS, MQTT y consultas HTTP al clasificador opcional |
 | `Energia.*` | Lecturas de tensión opcionales; monitores de batería y servo desactivados por defecto |
 | `secrets_ejemplo.h` | Plantilla de credenciales |
 
@@ -30,7 +30,7 @@ El segundo HC-SR04 de presencia está reservado en el firmware, pero `USAR_DETEC
 
 ## Compilar y cargar
 
-1. Copiar `secrets_ejemplo.h` como `secrets.h` y completar credenciales Wi-Fi y token.
+1. Copiar `secrets_ejemplo.h` como `secrets.h` y completar credenciales Wi-Fi, broker MQTT y CA según el [manual de software](../../docs/manual_software.md#4-configurar-el-broker-mqtt-y-mqttx).
 2. Revisar los GPIO de `config.h` y confirmar que corresponden a la placa física.
 3. Arduino IDE: abrir `Dispensador_ESP32.ino`, seleccionar la placa adecuada (confirmar variante) e instalar ArduinoJson 7 si el entorno lo requiere.
 4. PlatformIO: usar el `platformio.ini` de esta carpeta.
@@ -60,7 +60,7 @@ El código contiene parámetros y rutinas heredadas para un segundo HC-SR04 de p
 ## Pruebas
 
 ```bash
-make -C ESP32/test_host
+make -C firmware/ESP32/test_host
 ```
 
 Las pruebas de host comprueban lógica con sustitutos de hardware. No verifican sensores reales, Wi-Fi, tensiones, corriente ni movimiento físico del MG995.

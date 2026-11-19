@@ -6,18 +6,16 @@
 #define WIFI_SSID  "NOMBRE_DE_SU_RED_2.4GHz"
 #define WIFI_CLAVE "CONTRASENA"
 
-// --- Token compartido con el backend (backend/.env -> TOKEN_DISPOSITIVO) -------
-// Vacío = el ESP32 RECHAZA los comandos remotos (dispensar / borrar errores).
-// Genere uno propio, por ejemplo:  python -c "import secrets; print(secrets.token_hex(8))"
-#define TOKEN_DISPOSITIVO ""
-
-// --- Backend (PC con el dashboard) ---------------------------------------------
-// "" = descubrimiento automático en la LAN (recomendado: no hay que saber la IP del PC).
-// Si su red bloquea el broadcast UDP, escriba la dirección: "http://192.168.1.50:8001"
-#define URL_BACKEND ""
+// --- MQTT sobre TLS (credenciales propias del controlador) -------------------
+#define MQTT_HOST     ""   // Solo nombre DNS del broker, sin mqtts://
+#define MQTT_PORT     8883
+#define MQTT_SITE_ID  "mi-dispensador"
+#define MQTT_USERNAME ""
+#define MQTT_PASSWORD ""
+#define MQTT_CA_PEM   ""   // Pegue el certificado raíz PEM con saltos de línea escapados (ver manual)
 
 // --- IP del ESP32 ----------------------------------------------------------------
-// "" = DHCP (recomendado). El backend aprende la IP sola cuando el ESP32 se anuncia.
+// "" = DHCP (recomendado). El panel remoto usa el broker MQTT.
 // IP fija: complete los tres valores según SU red (deben coincidir con el router).
 #define IP_ESP32    ""
 #define IP_GATEWAY  "192.168.1.1"

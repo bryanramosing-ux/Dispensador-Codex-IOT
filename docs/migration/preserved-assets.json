@@ -139,11 +139,6 @@
       "sha256": "a700efcad4de069d9b661633dd39234274781b1020f8e3bc5a525b49d5a7bf81"
     },
     {
-      "source": "ESP32/Dispensador_ESP32/Dispensador_ESP32.ino",
-      "target": "firmware/ESP32/Dispensador_ESP32/Dispensador_ESP32.ino",
-      "sha256": "fe39902c4c64e9352ab55e42e6e17ee9579db5b30478b7abebd7e6ecf9aec29c"
-    },
-    {
       "source": "ESP32/Dispensador_ESP32/Dosificador.cpp",
       "target": "firmware/ESP32/Dispensador_ESP32/Dosificador.cpp",
       "sha256": "bf62062efb474d1fb31cacfc2603b32f06637e5b757c192093a6ae586db92a18"
@@ -184,16 +179,6 @@
       "sha256": "d8290a253ae46c6c722da80c6923f45dd65a51961232ba2b62926b65e21f6d82"
     },
     {
-      "source": "ESP32/Dispensador_ESP32/Red.cpp",
-      "target": "firmware/ESP32/Dispensador_ESP32/Red.cpp",
-      "sha256": "34d08dba8cacc09f851805531e2e427d7f6eb005c3d778322a7f736b9fcb0ba9"
-    },
-    {
-      "source": "ESP32/Dispensador_ESP32/Red.h",
-      "target": "firmware/ESP32/Dispensador_ESP32/Red.h",
-      "sha256": "066848a99d83e06768e1b3380dac2ecf70a1f0dadc2c2c74ba1ed735d0a49d58"
-    },
-    {
       "source": "ESP32/Dispensador_ESP32/Ultrasonico.cpp",
       "target": "firmware/ESP32/Dispensador_ESP32/Ultrasonico.cpp",
       "sha256": "6e9c603ac4ff7da734d37ae2e98faf47c28b0e6cef9a52821fe76c9149eb0f5c"
@@ -204,29 +189,9 @@
       "sha256": "3d53d48ff5ab46017c87676a5abdfea544a84ba90edd79cb87c15dc3c3053baa"
     },
     {
-      "source": "ESP32/Dispensador_ESP32/config.h",
-      "target": "firmware/ESP32/Dispensador_ESP32/config.h",
-      "sha256": "e08276ded27ee49b668c3021489bafb8e978f1817c0cd0352ccedea71a7a6160"
-    },
-    {
-      "source": "ESP32/Dispensador_ESP32/secrets_ejemplo.h",
-      "target": "firmware/ESP32/Dispensador_ESP32/secrets_ejemplo.h",
-      "sha256": "f00f2ffdf9d223faf7f49a4c1fb22e87630600967e1965e095d2a443c26ec3fd"
-    },
-    {
-      "source": "ESP32/README.md",
-      "target": "firmware/ESP32/README.md",
-      "sha256": "b7c77f9629420ca80d22bf495ffc99a05b938a4fbb93b37c2e420a01fcbbae81"
-    },
-    {
       "source": "ESP32/platformio.ini",
       "target": "firmware/ESP32/platformio.ini",
       "sha256": "6227fc8cd55bb0951376f38fdd98f41a1e2a63bd822519a088cda8ea62e6cb9a"
-    },
-    {
-      "source": "ESP32/test_host/Makefile",
-      "target": "firmware/ESP32/test_host/Makefile",
-      "sha256": "5338868bebae9fdaa0879b93a18b75e779b68288602a50a026af19aa00ca52cc"
     },
     {
       "source": "ESP32/test_host/qemu_autoprueba.sh",
@@ -287,31 +252,6 @@
       "source": "ESP32/test_host/test_historial.cpp",
       "target": "firmware/ESP32/test_host/test_historial.cpp",
       "sha256": "2d83f9df6b8db22e48911dd3990d556976337b3772eaa6b06ccfdf9e49cc4311"
-    },
-    {
-      "source": "ESP32_CAM/Camara_ESP32CAM/Camara_ESP32CAM.ino",
-      "target": "firmware/ESP32_CAM/Camara_ESP32CAM/Camara_ESP32CAM.ino",
-      "sha256": "c5fc9c4c7648b3093144531106c38a2c647e6b0eb7b04e52af371a134bb6ff7b"
-    },
-    {
-      "source": "ESP32_CAM/Camara_ESP32CAM/config.h",
-      "target": "firmware/ESP32_CAM/Camara_ESP32CAM/config.h",
-      "sha256": "70c41202c4c9b1323f7dbb39c53a4926601ed5a8dc865a0eab596bc6ccf7e571"
-    },
-    {
-      "source": "ESP32_CAM/Camara_ESP32CAM/secrets_ejemplo.h",
-      "target": "firmware/ESP32_CAM/Camara_ESP32CAM/secrets_ejemplo.h",
-      "sha256": "5ecd6d6bf9a123f66414ab42b237c39eb7dafd7a81afc50e37ad3844709ea6a4"
-    },
-    {
-      "source": "ESP32_CAM/README.md",
-      "target": "firmware/ESP32_CAM/README.md",
-      "sha256": "9a6d3e75bfe0613b8ce4793b62b1d00bc4bc0e5c0cd7aa2329dddf6f5e82d1ee"
-    },
-    {
-      "source": "ESP32_CAM/platformio.ini",
-      "target": "firmware/ESP32_CAM/platformio.ini",
-      "sha256": "9b6dd589b0cd5b288821b564fce94ff068dfd9506fa5405a55dc722169f98180"
     },
     {
       "source": "Mechanical/README.md",

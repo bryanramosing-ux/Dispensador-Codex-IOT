@@ -1,53 +1,61 @@
-# Arquitectura local
+# Arquitectura del monolito Next.js
 
-```
-ESP32-CAM ──Wi‑Fi──┐                        ┌── navegador PC / móvil / tablet
-                   ├── Router ── LAN ── PC con backend + dashboard
-ESP32 DevKit ─Wi‑Fi┘      (sin Internet)        (HTTP + SSE)
-   └─ GPIO: HC-SR04 (tolva) + MG995
-```
+~~~mermaid
+flowchart LR
+    P["Navegador (React)"] -->|"HTTPS, ID token"| N["Next.js · API y cliente MQTT"]
+    P -->|"Inicio de sesión"| A["Firebase Authentication"]
+    N -->|"Firebase Admin"| A
+    N --> F["Cloud Firestore"]
+    N --> S["Cloud Storage · JPEG"]
+    N <-->|"MQTT/TLS"| M["Broker MQTT público con autenticación"]
+    M <-->|"MQTT/TLS"| E["ESP32 DevKit"]
+    M <-->|"MQTT/TLS"| C["ESP32-CAM"]
+    X["MQTTX · diagnóstico"] --> M
+~~~
 
-Todo funciona dentro de la LAN: no se usan servicios cloud. Cada componente funciona aunque los demás fallen.
+`src/app` contiene las páginas y las rutas HTTP. Los componentes React están en `src/components` y los contratos compartidos en `src/lib/contracts.ts`. `src/lib/server` contiene Firebase Admin, el cliente MQTT y los módulos de persistencia, comandos y cámara. Next.js abre la conexión MQTT al iniciar y mantiene una suscripción en el mismo proceso Node.js que sirve la API.
 
-| Componente | Rol |
-|---|---|
-| ESP32 DevKit V1 | Control local del servo y sensor (máquina de estados en `Controlador`). Sigue operando sin Wi‑Fi ni backend (botón BOOT). Envía telemetría cada 2 s con backoff y expone `GET /status`, `POST /dispensar`, `POST /reset-errores`. |
-| ESP32-CAM | `GET /status`, `GET /capture` (JPEG puntual), `GET /stream` (MJPEG, sesiones de ~2 s). Una petición a la vez. |
-| Backend (`backend/dashboard_server.py`) | Recibe telemetría/alertas, responde al descubrimiento UDP, consulta la cámara, guarda fotos y eventos (SQLite), valida y reenvía comandos, empuja estado por SSE. Solo biblioteca estándar de Python. |
-| Dashboard (`frontend/`) | HTML/CSS/JS sin framework: panel, cámara, galería, control, historial. |
+El navegador inicia sesión con Firebase Authentication y envía un ID token en las peticiones a la API. El servidor verifica la validez y vigencia de la cuenta y requiere un documento de operador activo. El código del navegador recibe la configuración pública de Firebase. Las credenciales de Firebase Admin y del broker residen en el servidor.
 
-## Decisiones técnicas
+## Temas MQTT y ACL
 
-- **SSE en vez de WebSocket:** el flujo de actualización es solo servidor → navegador; SSE no requiere dependencias, se reconecta solo y es suficiente. Los comandos usan HTTP REST. No se usa MQTT.
-- **Descubrimiento UDP:** el ESP32 pregunta `DISPENSADOR?` por broadcast (puerto 41234) y el backend responde `DISPENSADOR!<puerto>`; no hay que escribir la IP del PC en el firmware (si el router bloquea broadcast, defina `URL_BACKEND`).
-- **Datos desactualizados:** si el ESP32 no envía telemetría durante 15 s se marca *desconectado* y el dashboard no muestra sus últimos valores como actuales.
-- **Cámara compartida:** el backend serializa el acceso (stream, captura, sondeo) con un candado porque el `WebServer` de la cámara atiende un cliente a la vez. Con el video abierto, una captura espera hasta ~8 s a que termine la sesión de stream en curso.
+Prefijo común `dispensador/<MQTT_SITE_ID>`. Cada fila indica los permisos mínimos del broker. Use una credencial por actor, sesión limpia y publicaciones **QoS 0** con **Retain desactivado**. El broker debe rechazar publicaciones que activen Retain en los temas de solicitudes si ofrece esa opción. El navegador se conecta por HTTPS a Next.js.
 
-## API del backend
+| Sufijo | Publica | Se suscribe | Contenido |
+|---|---|---|---|
+| `/esp32/telemetry` | Controlador | Next.js | `{"sentAt": epochSegundos, "data": { "dispositivo": "ESP32", "estado": "ESPERANDO", … }}` |
+| `/esp32/alert` | Controlador | Next.js | `{"sentAt": epochSegundos, "data": {"tipo":"COMIDA_BAJA","nivel":12}}` |
+| `/esp32/command` | Next.js | Controlador | `{"id": "uuid", "operation": "dispense", "portions": 1, "expiresAt": epochSegundos}` |
+| `/esp32/ack` | Controlador | Next.js | `{"id":"uuid","ok":true,"resultado":"ACEPTADA","cooldown_s":0}` |
+| `/camera/status` | Cámara | Next.js | `{"sentAt": epochSegundos, "data": {"camara":true,"resolucion":"VGA 640x480"}}` |
+| `/camera/request` | Next.js | Cámara | `{"id":"uuid","expiresAt":epochSegundos}` |
+| `/camera/frame/<uuid>` | Cámara | Next.js, patrón `/camera/frame/+` | JPEG binario de hasta 400 000 bytes |
+
+Para `reset-errors` el campo `portions` lleva `null`. Configure la ACL de MQTTX en modo de solo lectura con los temas de telemetría, estado y alerta. Sustituya los marcadores `epochSegundos` por el sello de tiempo actual si está simulando datos en una instancia de pruebas. El controlador publica cada 15 s y cuando cambia su estado. La cámara publica cada 30 s y al cambiar la disponibilidad. El panel considera desconectado al ESP32 después de 50 s sin mensaje y a la ESP32-CAM después de 90 s.
+
+## Comandos y cámara
+
+El servidor valida la confirmación y el rango de porciones. Firestore reserva el identificador del comando y el turno de envío en una transacción. Se emite una única orden MQTT con vencimiento de ocho segundos. El firmware descarta mensajes que vencieron y UUID recientes, y delega la ejecución a la máquina de estados existente. La placa conserva sus validaciones de tolva, cooldown, límite diario y estado del servo. Un acuse `ACEPTADA` confirma la solicitud. El resultado de la dosis llega en telemetría. Si se pierde el acuse, el comando queda con resultado desconocido y el historial permite verificarlo antes de solicitar otra dosis.
+
+La vista remota solicita JPEG sucesivos mientras está abierta. El monolito comparte las solicitudes de fotograma simultáneas. Las capturas manuales y periódicas guardan el JPEG en Storage y sus metadatos en Firestore. La ESP32-CAM conserva el HTTP local utilizado por el clasificador OpenCV opcional. El control por botón BOOT y monitor serie depende de la placa y funciona fuera de la conexión con el monolito.
+
+## API
+
+Envíe `Authorization: Bearer <ID_TOKEN>` en las rutas protegidas.
 
 | Ruta | Uso |
 |---|---|
-| `POST /api/device/telemetry`, `/api/device/alert` | ESP32 → backend (cabecera `X-Device-Token`) |
-| `GET /api/status` | Estado agregado (ESP32, cámara, última foto) |
-| `GET /api/events` | SSE: eventos `status` y `evento` |
-| `GET /api/camera/stream` | Proxy MJPEG de la cámara |
-| `POST /api/capture`, `POST /api/camera/refresh`, `POST /api/auto-capture {interval_s}` | Cámara (0 = apagado, 10–3600 s) |
-| `GET /api/gallery`, `GET /api/gallery/<foto>[?download=1]`, `DELETE /api/gallery/<foto>` | Galería (borrado exige `X-Confirm: delete`) |
-| `POST /api/dispense {porciones, confirm:true}`, `POST /api/reset-errors` | Control (requiere `TOKEN_DISPOSITIVO`) |
-| `GET /api/history?tipo=&limit=` | Historial persistente |
+| `GET /api/health` | Comprobar que el proceso responde |
+| `GET /api/session`, `GET /api/dashboard` | Verificar permiso de operador y obtener estado |
+| `POST /api/commands` | Enviar `id`, `operation` y, para dispensar, `portions` y `confirm: true` |
+| `GET /api/history?tipo=&limit=&cursor=` | Historial paginado |
+| `GET /api/camera/frame`, `POST /api/camera/capture` | Solicitar un JPEG y guardar una foto, respectivamente |
+| `PUT /api/camera/settings` | Actualizar `interval_s` (0 o 10–3600) |
+| `GET /api/gallery`, `GET /api/gallery/<nombre>` | Listar fotos y consultar JPEG |
+| `DELETE /api/gallery/<nombre>` | Borrar una foto con `X-Confirm: delete` |
 
-Las acciones del navegador exigen `X-Requested-With: dashboard` y mismo origen.
+## Operación
 
-## Campos de la telemetría del ESP32
+Use una instancia Node.js persistente por instalación. Necesita salida a MQTT/TLS y acceso a Firebase. Cada instalación usa su propio proyecto Firebase y un prefijo MQTT único. En un corte del broker, del proceso Next.js o de Firestore pueden perderse muestras de telemetría. Al volver la conexión, los nuevos mensajes actualizan el estado. El registro de raciones y el control local de la placa siguen el firmware.
 
-`estado`, `error`, `wifi_conectado`, `ip`, `rssi`, `backend` (enlazado), `sensor_nivel_ok`, `distancia_nivel_cm`,
-`nivel_tolva` (%), `alerta_tolva`, `servo` (`REPOSO|DISPENSANDO|ERROR`), `dispensando`, `pulso_servo_us`,
-`dispensaciones_total`, `dispensaciones_24h`, `ultima_dispensacion_hace_s` (-1 = ninguna), `ultimo_origen`,
-`ultimas_porciones`, `ultimo_resultado`, `cooldown_s`, `max_porciones`, `uptime_s`, `heap`, entre otros (ver `estadoJson()` en el `.ino`).
-
-## Seguridad y límites
-
-- Red local sin TLS ni login de usuario: **cualquier equipo de la LAN puede abrir el dashboard**. No abra puertos en el router.
-- Dispensar exige: token compartido (backend → ESP32), `confirm:true` explícito, 1–`MAX_PORCIONES` porciones, ESP32 conectado, sin dispensación en curso y separación mínima entre comandos. El ESP32 vuelve a validar (cooldown, límite diario, nivel de tolva, errores) y bloquea 60 s tras 5 tokens erróneos.
-- Fotos: nombres generados por el servidor (`foto_AAAAMMDD_HHMMSS_xxxxxx.jpg`), validados con expresión regular (sin *path traversal*), máx. 5 MB, escritura atómica.
-- El token viaja en claro por la LAN: protege contra errores y curiosos, no contra un atacante que espíe la red.
+Si el panel muestra MQTT conectado y la placa figura fuera de línea, revise en MQTTX que el prefijo coincida y que lleguen mensajes recientes. Si MQTTX tampoco recibe datos, verifique en el monitor serie el Wi-Fi, la hora de la placa, el certificado CA, el usuario del broker y sus permisos. Si Firestore no recibe datos mientras MQTTX sí los ve, compruebe proyecto, ADC y permisos del monolito. [Manual desde cero](manual_software.md).

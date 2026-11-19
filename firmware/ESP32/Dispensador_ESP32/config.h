@@ -15,7 +15,7 @@
 
 #define ALIMENTACION_USBC 1
 
-#define VERSION_FIRMWARE "2.0.0"
+#define VERSION_FIRMWARE "3.0.0"
 
 // -----------------------------------------------------------------------------
 // 1. PINES  (auditados: ver docs/conexiones_usbc.md)
@@ -39,15 +39,8 @@
 // -----------------------------------------------------------------------------
 // 2. RED  (los datos propios de la red van en secrets.h)
 // -----------------------------------------------------------------------------
-#define NOMBRE_MDNS            "dispensador"   // http://dispensador.local/status
-#define PUERTO_DESCUBRIMIENTO  41234           // UDP: el ESP32 busca al backend en la LAN
-#define DESCUBRIMIENTO_MS       3000UL         // cada cuánto pregunta mientras no lo encuentra
-#define TELEMETRIA_MS           2000UL         // envío periódico del estado al backend
-#define TELEMETRIA_MAX_MS      30000UL         // espera máxima entre reintentos si el backend no responde
-#define TIMEOUT_BACKEND_CONEXION_MS  800       // conexión TCP con el backend (corto: no frena el control)
-#define TIMEOUT_BACKEND_MS          1500       // respuesta del backend
-#define MAX_INTENTOS_TOKEN             5       // tokens incorrectos seguidos antes de bloquear
-#define BLOQUEO_TOKEN_MS           60000UL     // bloqueo de comandos remotos tras esos intentos
+#define TELEMETRIA_MS          15000UL         // latido MQTT y envío inmediato si cambia el estado
+#define TELEMETRIA_MAX_MS      30000UL         // tope de espera tras un fallo de publicación
 
 #define TIMEOUT_CONEXION_MS     2000UL   // (modo automático) conexión con el servidor de visión
 #define TIMEOUT_CLASIFICAR_MS  10000UL   // (modo automático) respuesta completa de /classify

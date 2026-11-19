@@ -1,9 +1,9 @@
 #include "Red.h"
 
 #include <ArduinoJson.h>
-#include <ESPmDNS.h>
 #include <HTTPClient.h>
 #include <WiFi.h>
+#include <time.h>
 
 #include "config.h"
 
@@ -12,9 +12,6 @@
 #else
 #include "secrets_ejemplo.h"
 #endif
-
-static const char MSG_PREGUNTA[] = "DISPENSADOR?";    // el ESP32 pregunta por broadcast UDP
-static const char MSG_RESPUESTA[] = "DISPENSADOR!";   // el backend responde "DISPENSADOR!<puerto>"
 
 // SIMULACION_QEMU: solo para arrancar el firmware en el emulador QEMU de Espressif,
 // que no emula la radio Wi-Fi. Nunca definirlo al compilar para la placa real.
@@ -34,7 +31,6 @@ void Red::iniciar(const char* ssid, const char* clave) {
       mascara.fromString(IP_MASCARA)) {
     WiFi.config(ip, gw, mascara, gw);  // IP fija opcional (por defecto DHCP)
   }
-  if (strlen(URL_BACKEND) > 0) urlBackend_ = URL_BACKEND;  // dirección manual: no se descubre
   WiFi.begin(ssid, clave);
   // Espera acotada: si no hay Wi-Fi, el equipo arranca igual y sigue con el control local.
   uint32_t t0 = millis();
@@ -58,92 +54,6 @@ String Red::ip() { return conectado() ? WiFi.localIP().toString() : String("0.0.
 int Red::rssi() { return conectado() ? WiFi.RSSI() : 0; }
 #endif
 
-// ----------------------------------------------------------------------------
-// Descubrimiento del backend: el ESP32 pregunta por broadcast UDP y el PC que
-// ejecuta el dashboard contesta con su puerto HTTP. Así no hay que escribir la
-// IP del PC en el firmware. Si URL_BACKEND está definida, no se usa.
-// ----------------------------------------------------------------------------
-void Red::descubrir() {
-#ifndef SIMULACION_QEMU
-  if (!conectado()) {
-    if (udpAbierto_) {
-      udp_.stop();
-      udpAbierto_ = false;
-    }
-    return;
-  }
-  if (!mdnsIniciado_) {
-    mdnsIniciado_ = MDNS.begin(NOMBRE_MDNS);  // http://dispensador.local/status
-    if (mdnsIniciado_) MDNS.addService("http", "tcp", 80);
-  }
-  if (strlen(URL_BACKEND) > 0) return;
-  // Se busca mientras no se conozca el backend o si dejó de responder (pudo cambiar de IP).
-  if (backendConocido() && fallosBackend_ < 3) return;
-  if (!udpAbierto_) udpAbierto_ = udp_.begin(PUERTO_DESCUBRIMIENTO) == 1;
-  if (!udpAbierto_) return;
-
-  int n = udp_.parsePacket();
-  if (n > 0) {
-    char buf[32];
-    int len = udp_.read((uint8_t*)buf, sizeof(buf) - 1);
-    if (len < 0) len = 0;
-    buf[len] = '\0';
-    const size_t pref = sizeof(MSG_RESPUESTA) - 1;
-    if (strncmp(buf, MSG_RESPUESTA, pref) == 0) {
-      long puerto = atol(buf + pref);
-      if (puerto > 0 && puerto < 65536) {
-        urlBackend_ = String("http://") + udp_.remoteIP().toString() + String(":") + String(puerto);
-        fallosBackend_ = 0;
-        Serial.printf("Backend encontrado en %s\n", urlBackend_.c_str());
-      }
-    }
-  }
-  if (millis() - tDescubrir_ >= DESCUBRIMIENTO_MS) {
-    tDescubrir_ = millis();
-    udp_.beginPacket(IPAddress(255, 255, 255, 255), PUERTO_DESCUBRIMIENTO);
-    udp_.write((const uint8_t*)MSG_PREGUNTA, sizeof(MSG_PREGUNTA) - 1);
-    udp_.endPacket();
-  }
-#endif
-}
-
-// ----------------------------------------------------------------------------
-// Cliente HTTP hacia el backend. Tiempos de espera cortos: si el PC está apagado
-// el lazo de control se detiene como mucho TIMEOUT_BACKEND_CONEXION_MS por intento,
-// y los intentos se espacian (ver gestionarTelemetria() en el .ino).
-// ----------------------------------------------------------------------------
-bool Red::postBackend(const char* ruta, const String& cuerpo) {
-  if (!conectado() || !backendConocido()) return false;
-  HTTPClient http;
-  http.setConnectTimeout(TIMEOUT_BACKEND_CONEXION_MS);
-  http.setTimeout(TIMEOUT_BACKEND_MS);
-  bool ok = false;
-  if (http.begin(urlBackend_ + String(ruta))) {
-    http.addHeader("Content-Type", "application/json");
-    http.addHeader("X-Device-Token", token_);
-    ok = http.POST(cuerpo) == 200;
-    http.end();
-  }
-  if (ok) {
-    fallosBackend_ = 0;
-  } else if (fallosBackend_ < 250) {
-    fallosBackend_++;
-  }
-  return ok;
-}
-
-bool Red::enviarTelemetria(const String& json) { return postBackend("/api/device/telemetry", json); }
-
-// POST /api/device/alert  {"dispositivo":"ESP32","tipo":"COMIDA_BAJA","nivel":18}
-bool Red::notificar(const char* tipo, float nivelPct) {
-  char cuerpo[112];
-  snprintf(cuerpo, sizeof(cuerpo), "{\"dispositivo\":\"ESP32\",\"tipo\":\"%s\",\"nivel\":%.0f}", tipo, nivelPct);
-  return postBackend("/api/device/alert", String(cuerpo));
-}
-
-// ----------------------------------------------------------------------------
-// Modo automático opcional: servidor de visión (OpenCV) y cámara
-// ----------------------------------------------------------------------------
 bool Red::getSimple(const String& url, uint32_t timeoutMs) {
   if (!conectado()) return false;
   HTTPClient http;
@@ -202,83 +112,163 @@ RespuestaClasificacion Red::clasificar(int distanciaCm) {
   return r;
 }
 
-// ----------------------------------------------------------------------------
-// Servidor HTTP local
-// ----------------------------------------------------------------------------
-void Red::responder(int codigo, const String& json) {
-  servidor_.sendHeader("Cache-Control", "no-store");
-  servidor_.send(codigo, "application/json", json);
-}
+#ifdef SIMULACION_QEMU
+void Red::iniciarMqtt(const ManejadoresRed&) {}
+void Red::atender() {}
+bool Red::backendConocido() const { return false; }
+bool Red::publicar(const char*, const String&) { return false; }
+#else
+#include <esp_idf_version.h>
 
-// Los comandos que mueven el servo exigen el token compartido con el backend.
-// Sin token configurado NO hay control remoto; tras varios intentos fallidos se
-// bloquean los comandos durante BLOQUEO_TOKEN_MS (frena la fuerza bruta).
-bool Red::tokenValido() {
-  if (strlen(token_) == 0) {
-    responder(403, "{\"ok\":false,\"resultado\":\"SIN_TOKEN\",\"error\":\"control remoto deshabilitado: defina TOKEN_DISPOSITIVO en secrets.h\"}");
-    return false;
-  }
-  if (intentosToken_ >= MAX_INTENTOS_TOKEN) {
-    if (millis() - tBloqueoToken_ < BLOQUEO_TOKEN_MS) {
-      responder(429, "{\"ok\":false,\"resultado\":\"BLOQUEADO\",\"error\":\"demasiados intentos con token incorrecto\"}");
+namespace {
+const char COMANDO[] = "dispensador/" MQTT_SITE_ID "/esp32/command";
+const char ACUSE[] = "dispensador/" MQTT_SITE_ID "/esp32/ack";
+const time_t FECHA_MINIMA = 1700000000;
+
+bool idValido(const char* id) {
+  if (strlen(id) != 36) return false;
+  for (size_t i = 0; i < 36; ++i) {
+    const char c = id[i];
+    if (i == 8 || i == 13 || i == 18 || i == 23) {
+      if (c != '-') return false;
+    } else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
       return false;
     }
-    intentosToken_ = 0;
   }
-  if (!servidor_.hasArg("token") || !(servidor_.arg("token") == token_)) {
-    if (++intentosToken_ >= MAX_INTENTOS_TOKEN) tBloqueoToken_ = millis();
-    responder(401, "{\"ok\":false,\"resultado\":\"TOKEN_INVALIDO\",\"error\":\"token incorrecto\"}");
-    return false;
-  }
-  intentosToken_ = 0;
   return true;
 }
-
-void Red::manejarDispensar() {
-  if (!tokenValido()) return;
-  // "porciones" debe ser 1 o 2 dígitos: cualquier otra cosa se rechaza sin mover nada.
-  String s = servidor_.arg("porciones");
-  bool numerico = s.length() >= 1 && s.length() <= 2;
-  for (unsigned i = 0; numerico && i < s.length(); i++) numerico = s[i] >= '0' && s[i] <= '9';
-  Solicitud r = Solicitud::PORCIONES_INVALIDAS;
-  if (numerico && m_.dispensar) r = m_.dispensar((uint8_t)s.toInt());
-
-  int codigo = 409;  // conflicto con el estado actual (ocupado, cooldown, tolva vacía...)
-  if (r == Solicitud::ACEPTADA) codigo = 202;
-  else if (r == Solicitud::PORCIONES_INVALIDAS) codigo = 400;
-  else if (r == Solicitud::DESHABILITADA) codigo = 403;
-  char buf[128];
-  snprintf(buf, sizeof(buf), "{\"ok\":%s,\"resultado\":\"%s\",\"cooldown_s\":%lu}",
-           r == Solicitud::ACEPTADA ? "true" : "false", nombreSolicitud(r),
-           (unsigned long)(m_.cooldownS ? m_.cooldownS() : 0));
-  responder(codigo, String(buf));
 }
 
-void Red::manejarReset() {
-  if (!tokenValido()) return;
-  bool habia = m_.borrarErrores ? m_.borrarErrores() : false;
-  responder(200, habia ? "{\"ok\":true,\"resultado\":\"ERRORES_BORRADOS\"}" : "{\"ok\":true,\"resultado\":\"SIN_ERRORES\"}");
-}
-
-void Red::iniciarServidor(const ManejadoresRed& manejadores, const char* token) {
+void Red::iniciarMqtt(const ManejadoresRed& manejadores) {
+  if (!MQTT_HOST[0] || !MQTT_USERNAME[0] || !MQTT_PASSWORD[0] || !MQTT_CA_PEM[0]) {
+    Serial.println("MQTT desactivado: complete secrets.h");
+    return;
+  }
   m_ = manejadores;
-  token_ = token ? token : "";
-#ifdef SIMULACION_QEMU
-  return;  // sin Wi-Fi no hay pila TCP/IP en el emulador
+  comandos_ = xQueueCreate(4, sizeof(Mensaje));
+}
+
+bool Red::backendConocido() const { return mqttListo_.load(); }
+
+void Red::conectarMqtt() {
+  if (!comandos_ || !conectado() || mqtt_) return;
+  if (!ntpIniciado_) {
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+    ntpIniciado_ = true;
+  }
+  if (time(nullptr) < FECHA_MINIMA || (int32_t)(millis() - siguienteConexion_) < 0) return;
+  siguienteConexion_ = millis() + 10000;
+
+  esp_mqtt_client_config_t config = {};
+#if ESP_IDF_VERSION_MAJOR >= 5
+  config.broker.address.hostname = MQTT_HOST;
+  config.broker.address.port = MQTT_PORT;
+  config.broker.address.transport = MQTT_TRANSPORT_OVER_SSL;
+  config.broker.verification.certificate = MQTT_CA_PEM;
+  config.credentials.username = MQTT_USERNAME;
+  config.credentials.authentication.password = MQTT_PASSWORD;
+  config.credentials.client_id = "disp-" MQTT_SITE_ID "-esp32";
+#else
+  config.host = MQTT_HOST;
+  config.port = MQTT_PORT;
+  config.transport = MQTT_TRANSPORT_OVER_SSL;
+  config.cert_pem = MQTT_CA_PEM;
+  config.username = MQTT_USERNAME;
+  config.password = MQTT_PASSWORD;
+  config.client_id = "disp-" MQTT_SITE_ID "-esp32";
 #endif
-  servidor_.on("/status", HTTP_GET, [this]() {
-    responder(200, m_.estadoJson ? m_.estadoJson() : String("{}"));
-  });
-  servidor_.on("/dispensar", HTTP_POST, [this]() { manejarDispensar(); });
-  servidor_.on("/reset-errores", HTTP_POST, [this]() { manejarReset(); });
-  // Cualquier otra ruta o método (p. ej. GET /dispensar) NO ejecuta nada.
-  servidor_.onNotFound([this]() { responder(404, "{\"error\":\"ruta o metodo no permitido\"}"); });
-  servidor_.begin();
+  mqtt_ = esp_mqtt_client_init(&config);
+  if (!mqtt_) return;
+  if (esp_mqtt_client_register_event(mqtt_, MQTT_EVENT_ANY, eventoMqtt, this) != ESP_OK ||
+      esp_mqtt_client_start(mqtt_) != ESP_OK) {
+    esp_mqtt_client_destroy(mqtt_);
+    mqtt_ = nullptr;
+  }
+}
+
+void Red::eventoMqtt(void* contexto, esp_event_base_t, int32_t evento, void* datos) {
+  auto& red = *static_cast<Red*>(contexto);
+  auto* mensaje = static_cast<esp_mqtt_event_t*>(datos);
+  if (evento == MQTT_EVENT_CONNECTED) {
+    esp_mqtt_client_subscribe(mensaje->client, COMANDO, 0);
+    return;
+  }
+  if (evento == MQTT_EVENT_SUBSCRIBED) {
+    red.mqttListo_.store(true);
+    Serial.println("MQTT conectado");
+    return;
+  }
+  if (evento == MQTT_EVENT_DISCONNECTED || evento == MQTT_EVENT_ERROR) {
+    red.mqttListo_.store(false);
+    xQueueReset(red.comandos_);
+    return;
+  }
+  Mensaje copia;
+  if (evento != MQTT_EVENT_DATA || mensaje->current_data_offset != 0 ||
+      mensaje->data_len <= 0 || mensaje->data_len != mensaje->total_data_len ||
+      (size_t)mensaje->data_len >= sizeof(copia.bytes) ||
+      (size_t)mensaje->topic_len != sizeof(COMANDO) - 1 ||
+      memcmp(mensaje->topic, COMANDO, sizeof(COMANDO) - 1) != 0) return;
+  memcpy(copia.bytes, mensaje->data, mensaje->data_len);
+  copia.bytes[mensaje->data_len] = '\0';
+  xQueueSend(red.comandos_, &copia, 0);
+}
+
+bool Red::publicar(const char* tema, const String& json) {
+  return backendConocido() &&
+         esp_mqtt_client_enqueue(mqtt_, tema, json.c_str(), json.length(), 0, false, true) >= 0;
+}
+
+void Red::manejarComando(const char* mensaje) {
+  JsonDocument doc;
+  if (deserializeJson(doc, mensaje)) return;
+  const char* id = doc["id"] | "";
+  const time_t expiracion = doc["expiresAt"] | 0L;
+  const time_t ahora = time(nullptr);
+  if (!idValido(id) || ahora < FECHA_MINIMA || expiracion <= ahora || expiracion > ahora + 15) return;
+  for (const auto& anterior : recientes_) {
+    if (strcmp(anterior, id) == 0) return;
+  }
+
+  const char* operacion = doc["operation"] | "";
+  const char* resultado = nullptr;
+  bool ok = false;
+  if (strcmp(operacion, "dispense") == 0 && m_.dispensar) {
+    const int porciones = doc["portions"].is<int>() ? doc["portions"].as<int>() : 0;
+    const Solicitud respuesta = porciones >= 1 && porciones <= MAX_PORCIONES_MANUAL
+      ? m_.dispensar((uint8_t)porciones) : Solicitud::PORCIONES_INVALIDAS;
+    ok = respuesta == Solicitud::ACEPTADA;
+    resultado = nombreSolicitud(respuesta);
+  } else if (strcmp(operacion, "reset-errors") == 0 && m_.borrarErrores) {
+    ok = true;
+    resultado = m_.borrarErrores() ? "ERRORES_BORRADOS" : "SIN_ERRORES";
+  }
+  if (!resultado) return;
+  memcpy(recientes_[proximoId_], id, 37);
+  proximoId_ = (proximoId_ + 1) % 8;
+
+  char acuse[180];
+  snprintf(acuse, sizeof(acuse), "{\"id\":\"%s\",\"ok\":%s,\"resultado\":\"%s\",\"cooldown_s\":%lu}",
+           id, ok ? "true" : "false", resultado, (unsigned long)(m_.cooldownS ? m_.cooldownS() : 0));
+  publicar(ACUSE, String(acuse));
 }
 
 void Red::atender() {
-#ifndef SIMULACION_QEMU
-  servidor_.handleClient();
-  descubrir();
+  conectarMqtt();
+  Mensaje mensaje;
+  if (backendConocido() && xQueueReceive(comandos_, &mensaje, 0) == pdTRUE) manejarComando(mensaje.bytes);
+}
 #endif
+
+bool Red::enviarTelemetria(const String& json) {
+  return publicar("dispensador/" MQTT_SITE_ID "/esp32/telemetry",
+                  String("{\"sentAt\":") + (unsigned long)time(nullptr) + ",\"data\":" + json + "}");
+}
+
+bool Red::notificar(const char* tipo, float nivelPct) {
+  char mensaje[160];
+  snprintf(mensaje, sizeof(mensaje),
+           "{\"sentAt\":%lu,\"data\":{\"tipo\":\"%s\",\"nivel\":%.0f}}",
+           (unsigned long)time(nullptr), tipo, nivelPct);
+  return publicar("dispensador/" MQTT_SITE_ID "/esp32/alert", String(mensaje));
 }

@@ -1,27 +1,25 @@
-# Esquema y sincronización de Firestore
+# Firestore del dispensador
 
-El backend es el único cliente de Firebase Admin. Configura ADC desde la identidad del entorno o una ruta externa a la cuenta de servicio. Las reglas versionadas cierran acceso directo a los clientes. El backend sirve HTTP mediante autenticación propia para la LAN.
+El SDK de Firebase Admin crea las colecciones a partir de la primera escritura. Use Cloud Firestore en modo nativo, base predeterminada `(default)`. El navegador consulta la API de Next.js. Las reglas bloquean el acceso directo de los SDK de cliente y del REST con tokens de usuarios. Firebase Admin utiliza los permisos IAM de su identidad. [Configuración de Firebase](../manual_software.md#2-crear-y-configurar-firebase).
 
-| Colección | ID | Datos |
-| --- | --- | --- |
-| `telemetry` | UUID generado al admitir una muestra nueva | `deviceId:esp32,ts,ip,payload`. `payload` conserva nombres, sentinelas y unidades del firmware. |
-| `device_status` | `esp32`, `camera` | `online,seen,data`, y para el ESP32 `ip` observada. `seen` es epoch en milisegundos. |
-| `history` | ID entero rellenado a 14 dígitos como ID de documento | `id,ts,tipo,mensaje` para el historial público con sesión. Las dispensaciones del firmware y los resultados de comandos aparecen como entradas distintas. |
-| `events` | Mismo ID de documento que la entrada de historial | `id,ts,tipo,mensaje,detalle`. Incluye detalles de alertas, resultado observado del firmware e ID del comando cuando corresponde. |
-| `commands` | UUID o `request-<Idempotency-Key>` | `operation,portions,confirmed,requestedAt,state,status,response,finishedAt`. `dispatching`, `accepted`, `rejected` y `outcome_unknown` distinguen envío, aceptación, rechazo y ausencia de confirmación. |
-| `photos` | Nombre de archivo original o generado | `name,size,ts,objectPath`. `objectPath` apunta a `gallery/NOMBRE.jpg` cuando hay bucket. |
-| `settings` | `dashboard`, `last-alert`, `last-dispense`, `_sync-<uuid>` | Intervalo automático, deduplicación de alertas, límite temporal y secuencia confirmada del backend. |
+| Colección | Identificador | Campos principales | Escritura |
+|---|---|---|---|
+| `operators` | UID de Firebase Auth | `active` booleano, `updatedAt` Timestamp | `pnpm firebase:operator grant/revoke UID` o Firebase Console |
+| `device_status` | `esp32` y `camera` | `data` último estado, `sentAt` segundos Unix del dispositivo, `seen` ms Unix de recepción, `recordedAt` Timestamp | Mensajes MQTT de estado |
+| `telemetry` | ID generado | `deviceId`, `ts` ISO 8601, `recordedAt` Timestamp, `sentAt` segundos Unix, `payload` | Muestras aceptadas del controlador |
+| `history` | ID generado | `ts` ISO 8601, `recordedAt` Timestamp, `tipo`, `mensaje`, `detail` opcional | Conexión, estado, error, alerta, dosis, comando y foto |
+| `commands` | UUID de la petición | `operation`, `portions`, `requestedBy`, `recordedAt`, `expiresAt`, `lockUntil`, `state`, `finishedAt`, `result` opcional | Operaciones del panel |
+| `settings` | `dashboard`, `command_dispatch`, `last-mqtt-alert` | Intervalo `auto_capture_s`, turno de comando y última alerta para deduplicación | Panel y monolito |
+| `photos` | Nombre JPEG | `name`, `ts`, `size`, `recordedAt`, `objectPath`, `source` | Captura manual o automática |
 
-`recordedAt` es un Timestamp de Firestore obtenido de la fecha en ms del registro local. Las rutas heredadas expresan `ts` en UTC con precisión de segundos y `+00:00`. Los cursores usan fecha e ID, ambos descendentes. Los índices compuestos de `history` y `events` soportan filtros por `tipo`; Firestore añade el desempate por nombre en la misma dirección. La desindexación de `payload` y `data` reduce el coste de escribir instantáneas.
+`commands.state` puede ser `pending`, `accepted`, `rejected` u `outcome_unknown`. Tras una interrupción del proceso, un comando pendiente y vencido se considera de resultado desconocido al consultar el mismo UUID mediante la API. El bloqueo de envío vence automáticamente.
 
-## Funcionamiento sin Internet
+Firestore ordena historial y fotos por `recordedAt` y por ID de documento. El índice para `history` filtrado por `tipo` se define en `firestore.indexes.json`. Se conservó el índice anterior de `events` para consultas históricas. Los mapas de telemetría y estado se excluyen de la indexación. Revise el volumen y la retención de muestras y fotos según sus necesidades operativas.
 
-El proceso confirma el evento, la proyección local y su entrada en la cola en una transacción SQLite WAL con `synchronous=FULL`. En caso de caída de Firebase, el dashboard lee la proyección local y la ingesta del ESP32 responde tras esa transacción. La cola también sobrevive a reinicios de NestJS. Los JPEG se guardan como BLOB local de hasta 5 MiB, con eliminación lógica inmediata y borrado del BLOB tras sincronizar el borrado. Otros errores de almacenamiento local siguen produciendo un fallo HTTP.
+Para la galería, `objectPath` tiene el formato `gallery/<nombre>` en Cloud Storage. Los archivos se leen y borran desde la API autenticada. Un fallo entre la carga del JPEG y la escritura en Firestore puede dejar un objeto sin metadatos. Si se interrumpe una captura y la foto no aparece, compruebe el objeto en el bucket y que no exista el documento de la galería antes de borrarlo.
 
-Un consumidor procesa hasta 25 entradas por ronda en orden de secuencia, con una sola ronda activa. Firestore actualiza documentos y marcador de secuencia atómicamente, con hasta tres intentos de transacción del SDK. Cuando falla, el consumidor vuelve a intentar con espera exponencial de 0,5–60 s más jitter. Una entrada que falla conserva su lugar y permite recuperar la secuencia consultando `/api/health/sync` y los registros. Un bucket mal configurado puede bloquear detrás de una fotografía otras escrituras de la cola. Corrija IAM o el nombre del bucket antes de reanudar.
+## Datos de la versión anterior
 
-Cada entrada conserva IDs y fecha entre intentos. Un acuse perdido tras un commit se reconoce consultando la secuencia confirmada y no vuelve a aplicar la mutación. El firmware no envía ID de mensaje. Una telemetría idéntica a la anterior del mismo par refresca la conexión sin insertar otra muestra cruda. Una alerta consecutiva con los mismos datos en 35 s se trata como posible reenvío. Dos alertas realmente distintas pero idénticas dentro de ese intervalo son indistinguibles con el protocolo actual.
+Al apuntar al mismo proyecto, el panel puede leer el historial y las fotos sincronizadas por el backend anterior. Para que las fotos aparezcan con su imagen, conserve el bucket original y los documentos `photos` con `objectPath`. El nuevo código escribe los eventos en `history` y usa los mismos nombres de colección para las proyecciones compartidas. Los documentos anteriores de `events` y el marcador de sincronización quedan accesibles para consultas administrativas.
 
-La cola realiza la operación del objeto antes de publicar sus metadatos. La ruta del objeto es estable y el borrado tolera ausencia previa. Firestore y Cloud Storage son dos servicios; una caída entre ambas operaciones puede dejar el objeto más adelantado que sus metadatos hasta la próxima sincronización. El video se retransmite en memoria.
-
-Use un volumen persistente privado, una instancia por instalación y espacio adecuado para su volumen de telemetría y fotos. SQLite impide una segunda apertura concurrente del mismo directorio. El servicio conserva una proyección local para sostener consultas e imágenes durante cortes. Rotación de históricos, reconstrucción de SQLite desde la nube y despliegue activo-activo requerirían un procedimiento adicional. Respaldar el volumen es especialmente importante si Cloud Storage está deshabilitado.
+Si hay datos pendientes en el almacén SQLite anterior, mantenga una copia de su volumen y finalice la sincronización de la versión anterior antes de apagarla. Las fotos que solo existen en SQLite requieren exportarse desde el entorno anterior. Para una instalación nueva, las colecciones se llenan a medida que se autorizan operadores, se conectan las placas y se usa el panel.

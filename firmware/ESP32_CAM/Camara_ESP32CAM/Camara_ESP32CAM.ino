@@ -4,6 +4,7 @@
 
 #include "esp_camera.h"
 #include "config.h"
+#include "MqttCamara.h"
 
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -155,7 +156,7 @@ void manejarStream() {
   }
 }
 
-void manejarEstado() {
+String estadoCamaraJson() {
   char buf[320];
   sensor_t* sn = camaraOk ? esp_camera_sensor_get() : nullptr;
   const char* res = "n/d";
@@ -176,7 +177,11 @@ void manejarEstado() {
            (unsigned long)fotosOk, (unsigned long)fotosFallidas, WiFi.RSSI(),
            (unsigned)ESP.getFreeHeap(), (unsigned long)(millis() / 1000), res,
            WiFi.localIP().toString().c_str());
-  servidor.send(camaraOk ? 200 : 503, "application/json", buf);
+  return String(buf);
+}
+
+void manejarEstado() {
+  servidor.send(camaraOk ? 200 : 503, "application/json", estadoCamaraJson());
 }
 
 void conectarWifi() {
@@ -210,6 +215,7 @@ void setup() {
 
   camaraOk = iniciarCamara();
   conectarWifi();
+  prepararMqttCamara();
   servidor.on("/capture", HTTP_GET, manejarCaptura);
   servidor.on("/stream", HTTP_GET, manejarStream);
   servidor.on("/status", HTTP_GET, manejarEstado);
@@ -219,6 +225,7 @@ void setup() {
 
 void loop() {
   servidor.handleClient();
+  atenderMqttCamara(camaraOk, capturarFresca, estadoCamaraJson);
 
   bool problema = !camaraOk || WiFi.status() != WL_CONNECTED;
   digitalWrite(LED_ROJO_GPIO_NUM, problema ? LOW : HIGH);

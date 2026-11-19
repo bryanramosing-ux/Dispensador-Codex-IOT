@@ -1,9 +1,17 @@
 {
   "version": "2.0.0",
   "tasks": [
-    { "label": "NestJS (desarrollo)", "type": "npm", "script": "dev:backend", "problemMatcher": [] },
-    { "label": "Vue (desarrollo)", "type": "npm", "script": "dev:frontend", "problemMatcher": [] },
-    { "label": "Compilar monorepositorio", "type": "npm", "script": "build", "problemMatcher": ["$tsc"] },
-    { "label": "Pruebas del backend", "type": "npm", "script": "test", "problemMatcher": [] }
+    {
+      "label": "Dispensador: desarrollo",
+      "type": "shell",
+      "command": "pnpm dev",
+      "problemMatcher": []
+    },
+    {
+      "label": "Dispensador: verificar TypeScript",
+      "type": "shell",
+      "command": "pnpm typecheck",
+      "problemMatcher": ["$tsc"]
+    }
   ]
 }

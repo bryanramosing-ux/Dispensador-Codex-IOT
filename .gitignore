@@ -71,3 +71,8 @@ firebase-debug.log
 .data/
 scripts/legacy/backend/storage/
 firestore-debug.log
+
+# Next.js y Firebase emulado
+.next/
+next-env.d.ts
+ui-debug.log

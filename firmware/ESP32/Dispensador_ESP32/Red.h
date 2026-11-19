@@ -1,14 +1,16 @@
-// Red.h - Wi-Fi, descubrimiento del backend, telemetría (cliente HTTP) y servidor
-// HTTP local del ESP32 (estado + comandos autorizados).
+// Wi-Fi y transporte MQTT. La máquina de estados se ejecuta en el lazo Arduino.
 #pragma once
 #include <Arduino.h>
-#include <WebServer.h>
-#include <WiFiUdp.h>
 #include "Controlador.h"
 
-// Funciones que el servidor HTTP llama para leer el estado o ejecutar un comando.
+#ifndef SIMULACION_QEMU
+#include <atomic>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <mqtt_client.h>
+#endif
+
 struct ManejadoresRed {
-  String (*estadoJson)() = nullptr;
   Solicitud (*dispensar)(uint8_t porciones) = nullptr;
   bool (*borrarErrores)() = nullptr;
   uint32_t (*cooldownS)() = nullptr;
@@ -17,47 +19,37 @@ struct ManejadoresRed {
 class Red {
  public:
   void iniciar(const char* ssid, const char* clave);
+  void iniciarMqtt(const ManejadoresRed& manejadores);
+  void atender();
   bool conectado();
+  bool backendConocido() const;
   void reconectar();
   String ip();
   int rssi();
+  bool enviarTelemetria(const String& json);
+  bool notificar(const char* tipo, float nivelPct);
 
-  // --- Backend (dashboard) ---
-  bool backendConocido() const { return urlBackend_.length() > 0; }
-  const String& urlBackend() const { return urlBackend_; }
-  bool enviarTelemetria(const String& json);          // POST /api/device/telemetry
-  bool notificar(const char* tipo, float nivelPct);   // POST /api/device/alert
-
-  // --- Modo automático opcional (servidor de visión + cámara) ---
   bool camaraDisponible();
   bool servidorDisponible();
   RespuestaClasificacion clasificar(int distanciaCm);
 
-  // --- Servidor HTTP local ---
-  //   GET  /status          estado en JSON (sin token: solo lectura)
-  //   POST /dispensar       porciones=N&token=...   (cuerpo de formulario)
-  //   POST /reset-errores   token=...
-  void iniciarServidor(const ManejadoresRed& manejadores, const char* token);
-  void atender();   // llamar en cada vuelta del loop: HTTP + descubrimiento
-
  private:
   bool getSimple(const String& url, uint32_t timeoutMs);
-  bool postBackend(const char* ruta, const String& cuerpo);
-  void descubrir();
-  bool tokenValido();
-  void responder(int codigo, const String& json);
-  void manejarDispensar();
-  void manejarReset();
-
-  WebServer servidor_{80};
-  WiFiUDP udp_;
-  bool udpAbierto_ = false;
-  bool mdnsIniciado_ = false;
+  bool publicar(const char* tema, const String& json);
+#ifndef SIMULACION_QEMU
+  struct Mensaje {
+    char bytes[224];
+  };
+  static void eventoMqtt(void* contexto, esp_event_base_t, int32_t evento, void* datos);
+  void conectarMqtt();
+  void manejarComando(const char* mensaje);
   ManejadoresRed m_;
-  const char* token_ = "";
-  String urlBackend_;
-  uint8_t fallosBackend_ = 0;
-  uint32_t tDescubrir_ = 0;
-  uint8_t intentosToken_ = 0;
-  uint32_t tBloqueoToken_ = 0;
+  esp_mqtt_client_handle_t mqtt_ = nullptr;
+  QueueHandle_t comandos_ = nullptr;
+  std::atomic<bool> mqttListo_{false};
+  bool ntpIniciado_ = false;
+  uint32_t siguienteConexion_ = 0;
+  char recientes_[8][37] = {};
+  uint8_t proximoId_ = 0;
+#endif
 };

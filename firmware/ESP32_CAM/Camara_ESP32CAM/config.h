@@ -1,10 +1,5 @@
-// config.h - ESP32-CAM (AI-Thinker). Solo captura y entrega imágenes por HTTP.
+// config.h - ESP32-CAM (AI-Thinker). Captura por MQTT y HTTP local.
 #pragma once
-
-// Red (IP fija: el PC la usa en OpenCV/config.py -> CAMARA_URL)
-#define IP_CAMARA    "192.168.1.51"   // "" = DHCP
-#define IP_GATEWAY   "192.168.1.1"
-#define IP_MASCARA   "255.255.255.0"
 
 // Imagen. VGA (640x480) es suficiente para el clasificador (entrada 224x224)
 // y produce JPEG de pocas decenas de kB: transmisión rápida por Wi-Fi.

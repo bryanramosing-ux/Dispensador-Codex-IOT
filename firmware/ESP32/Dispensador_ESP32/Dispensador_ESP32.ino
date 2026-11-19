@@ -6,12 +6,12 @@
 //
 //  Responsabilidades del ESP32:
 //    * Medir el nivel de alimento de la tolva (HC-SR04) y avisar cuando se acaba.
-//    * Dispensar a pedido: panel web (comando HTTP con token), botón BOOT de la
+//    * Dispensar a pedido: panel web (comando MQTT sobre TLS), botón BOOT de la
 //      placa (control local, funciona sin Wi-Fi) o comando serie DISPENSAR.
 //    * VALIDAR cada pedido (porciones, cooldown, límite diario, tolva vacía,
 //      errores, dosis en curso) antes de mover el servo.
 //    * Generar la señal PWM del MG995 (solo señal: el servo se alimenta aparte).
-//    * Enviar su estado al backend (JSON) y responder GET /status.
+//    * Publicar su estado en MQTT (JSON).
 //    * Seguir funcionando aunque no haya Wi-Fi ni backend.
 //    * (Tras validacion, USAR_DETECCION_AUTOMATICA) detectar a la mascota con el
 //      HC-SR04 y pedir la clasificación al servidor de visión del PC.
@@ -174,8 +174,7 @@ Parametros crearParametros() {
 Controlador controlador(hardware, crearParametros());
 
 // ----------------------------------------------------------------------------
-// Estado en JSON: es el mismo documento para GET /status y para la telemetría
-// que se envía al backend. Cada campo está explicado en docs/arquitectura.md.
+// Estado en JSON para el monitor serie y la telemetría MQTT.
 // ----------------------------------------------------------------------------
 const char* estadoServo() {
   Estado e = controlador.estado();
@@ -224,7 +223,7 @@ String estadoJson() {
   return String(buf);
 }
 
-// Comandos remotos (ya autenticados por Red con el token)
+// Comandos remotos recibidos por el broker con permisos por tema.
 Solicitud dispensarRemoto(uint8_t porciones) { return controlador.solicitarDispensacion(porciones, Origen::PANEL); }
 bool borrarErroresRemoto() { return controlador.borrarErrores(); }
 uint32_t cooldownSegundos() { return (controlador.cooldownRestanteMs() + 999) / 1000; }
@@ -240,14 +239,21 @@ void gestionarTelemetria() {
   static Alerta alertaPrevia = Alerta::NINGUNA;
   static uint32_t dosisPrevias = 0;
   static bool pendientePrevio = false;
-  if (!red.conectado() || !red.backendConocido()) return;
+  static bool habiaMqtt = false;
+  if (!red.conectado() || !red.backendConocido()) {
+    habiaMqtt = false;
+    return;
+  }
+  bool conectadoAhora = !habiaMqtt;
+  habiaMqtt = true;
+  if (conectadoAhora) espera = TELEMETRIA_MS;
 
   const bool cambio = controlador.estado() != estadoPrevio || controlador.alertaNivel() != alertaPrevia ||
                       controlador.intentosDosis() != dosisPrevias ||
                       controlador.dosisPendiente() != pendientePrevio;
   const uint32_t ahora = millis();
   const bool sano = espera == TELEMETRIA_MS;   // sin fallos recientes: se puede enviar al instante
-  if (!(ahora - tUltimo >= espera || (cambio && sano))) return;
+  if (!(conectadoAhora || ahora - tUltimo >= espera || (cambio && sano))) return;
 
   tUltimo = ahora;
   estadoPrevio = controlador.estado();
@@ -315,7 +321,7 @@ void procesarComando(String linea) {
   } else if (cmd == "RED") {
     Serial.printf("Wi-Fi %s | IP %s | RSSI %d dBm | backend %s\n", red.conectado() ? "conectado" : "SIN CONEXION",
                   red.ip().c_str(), red.rssi(),
-                  red.backendConocido() ? red.urlBackend().c_str() : "no encontrado (buscando)");
+                  red.backendConocido() ? "MQTT conectado" : "MQTT sin conexión");
   } else if (cmd == "ESTADO") {
     Serial.println(estadoJson());
   } else if (cmd == "RESET") {
@@ -396,18 +402,14 @@ void setup() {
   if (USAR_DETECCION_AUTOMATICA) ultrasonico.iniciar();
   nivel.iniciar();
   if (!dosificador.iniciar()) Serial.println(F("ERROR: no se pudo configurar el PWM del servo"));
-  dosificador.alEsperar(atenderRedDuranteDosis);  // el servidor HTTP responde también durante la dosis
+  dosificador.alEsperar(atenderRedDuranteDosis);  // se atienden mensajes MQTT también durante la dosis
 
   red.iniciar(WIFI_SSID, WIFI_CLAVE);
   ManejadoresRed manejadores;
-  manejadores.estadoJson = estadoJson;
   manejadores.dispensar = dispensarRemoto;
   manejadores.borrarErrores = borrarErroresRemoto;
   manejadores.cooldownS = cooldownSegundos;
-  red.iniciarServidor(manejadores, TOKEN_DISPOSITIVO);
-  if (strlen(TOKEN_DISPOSITIVO) == 0) {
-    Serial.println(F("AVISO: TOKEN_DISPOSITIVO vacio -> el panel web NO puede dispensar (ver secrets.h)"));
-  }
+  red.iniciarMqtt(manejadores);
   controlador.iniciar();
   Serial.println(F("Escriba AYUDA en el monitor serie para ver los comandos."));
 #ifdef SIMULACION_QEMU
