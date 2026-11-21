@@ -1,5 +1,7 @@
 # Dispensador IoT
 
+**Aplicación Android Marea:** [abrir el proyecto móvil y la guía para trabajar desde casa](DispensadorIoT-Android/README.md). Incluye los firmwares MQTT, la configuración Firebase y el manual de montaje.
+
 Dashboard local para supervisar el ESP32, la ESP32-CAM y el dispensador de alimento. NestJS conserva las rutas del firmware, sirve el dashboard Vue y replica la actividad a Firebase. El historial, la última telemetría y las fotografías quedan disponibles en el equipo que ejecuta NestJS durante una pérdida de Internet.
 
 ```
