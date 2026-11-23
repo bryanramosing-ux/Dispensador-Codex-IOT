@@ -1,6 +1,6 @@
 # Marea · dispensador Android
 
-Abre esta carpeta (contiene settings.gradle.kts) en Android Studio. Ejecuta app y pulsa **Probar en simulación**. La guía de montaje, el alta de Firebase y las pruebas MQTTX están en [el manual](docs/MANUAL.md).
+Abre esta carpeta (contiene settings.gradle.kts) en Android Studio Panda 1 (2025.3.1). Ejecuta app y pulsa **Probar en simulación**. La guía de montaje, el alta de Firebase y las pruebas MQTTX están en [el manual](docs/MANUAL.md).
 
 | Módulo | Responsabilidad |
 |---|---|
@@ -19,7 +19,7 @@ Verificación reproducible de política en PC:
 g++ -std=c++17 tests/policy.cpp -o policy && ./policy
 ```
 
-Compilar Android: JDK 17, SDK 35 y acceso a Google Maven, Maven Central y Gradle. Ejecutar `./gradlew :app:assembleDebug` o `.\gradlew.bat :app:assembleDebug` en Windows. Resultado esperado: `app/build/outputs/apk/debug/app-debug.apk`.
+Para compilar en Panda 1, selecciona su JBR 21 en **Settings → Build, Execution, Deployment → Build Tools → Gradle → Gradle JDK**. Instala Android SDK Platform 35 en SDK Manager y sincroniza el proyecto. El wrapper usa Gradle 8.9 con AGP 8.7.3. Los cuatro módulos generan bytecode JVM 17 con el compilador disponible. Para ejecutar el wrapper desde PowerShell, apunta JAVA_HOME a la carpeta jbr de tu instalación de Android Studio. Ejecutar `./gradlew :app:assembleDebug` o `.\gradlew.bat :app:assembleDebug` en Windows. Resultado esperado: `app/build/outputs/apk/debug/app-debug.apk`.
 
 Procedencia del wrapper: Gradle v8.9.0, licencia Apache 2.0. Referencia original: https://github.com/bryanramosing-ux/Dispensador-Codex-IOT
 
