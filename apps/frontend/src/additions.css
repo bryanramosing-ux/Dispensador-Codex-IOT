@@ -1,6 +1,0 @@
-input { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: inherit; min-width: 0; }
-.photo-preview { border: 0; background: none; padding: 0; cursor: zoom-in; display: block; }
-.photo-preview img { display: block; max-width: 260px; width: 100%; border-radius: 8px; }
-.thumb .photo-preview { width: 100%; }
-.thumb .photo-preview img { max-width: none; border-radius: 0; }
-.grid + .btn, .list + .btn { margin-top: 12px; }

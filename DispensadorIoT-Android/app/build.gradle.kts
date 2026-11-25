@@ -12,7 +12,11 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     buildFeatures { compose = true }
 }
-kotlin { jvmToolchain(17) }
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
 dependencies {
     implementation(project(":domain"))
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
