@@ -1,5 +1,5 @@
 #include <algorithm>
-#include "Network.h"
+#include "MareaMqtt.h"
 #include "esp_camera.h"
 
 // Mapa AI Thinker ESP32-CAM con OV2640. Verificar antes de cargar.

@@ -1,10 +1,1 @@
-# Byte-preserved source files and assets must also match on Windows checkouts.
-firmware/** -text
-assets/3d/** -text
-scripts/legacy/backend/** -text
-scripts/legacy/frontend/** -text
 *.stl binary
-*.obj -text
-*.svg -text
-*.srt -text
-*.csv -text

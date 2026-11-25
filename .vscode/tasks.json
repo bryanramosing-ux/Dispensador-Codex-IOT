@@ -1,9 +1,0 @@
-{
-  "version": "2.0.0",
-  "tasks": [
-    { "label": "NestJS (desarrollo)", "type": "npm", "script": "dev:backend", "problemMatcher": [] },
-    { "label": "Vue (desarrollo)", "type": "npm", "script": "dev:frontend", "problemMatcher": [] },
-    { "label": "Compilar monorepositorio", "type": "npm", "script": "build", "problemMatcher": ["$tsc"] },
-    { "label": "Pruebas del backend", "type": "npm", "script": "test", "problemMatcher": [] }
-  ]
-}
