@@ -21,13 +21,13 @@ El objetivo de la primera sesión es recibir una lectura del ESP32 en el teléfo
 
 ## Abrir Android Studio y probar sin componentes
 
-1. Descomprime el ZIP. En Android Studio Ladybug 2024.2.1 o posterior, selecciona **Open** y abre la carpeta que contiene `settings.gradle.kts`. En **SDK Manager** instala Android SDK Platform 35. Usa un JDK 17 disponible para Gradle y su toolchain.
+1. Descomprime el ZIP. En Android Studio Panda 1 (2025.3.1), selecciona **Open** y abre la carpeta que contiene `settings.gradle.kts`. En **SDK Manager** instala Android SDK Platform 35. En **Settings → Build, Execution, Deployment → Build Tools → Gradle**, elige **Wrapper** y el JDK incluido **JetBrains Runtime 21** (GRADLE_LOCAL_JAVA_HOME si apunta a jbr). Pulsa **Apply → OK** y luego **File → Sync Project with Gradle Files**.
 2. Espera a que termine **Sync Project with Gradle Files**. El primer inicio descarga Gradle y las dependencias. En Windows también puedes ejecutar `.\gradlew.bat :app:assembleDebug` desde la terminal de esa carpeta.
 3. En **Device Manager** crea un emulador con API 26 o superior, o conecta un teléfono con depuración USB habilitada. Selecciona **app** y pulsa **Run**.
 4. Pulsa **Probar en simulación**. La tolva parte en 78 %, el sensor del plato marca 24 cm. Pide una porción y confirma. Debe aparecer 74 % y un ciclo completado en Historial. Un segundo pedido inmediato debe quedar rechazado. Espera diez segundos antes de volver a probar.
 5. Gira el teléfono y revisa el historial. Sal por Ajustes y vuelve a entrar en simulación. El historial se conserva en ese teléfono; las lecturas y la cuota del equipo virtual se reinician por sesión. En este modo la cámara indica que requiere equipo físico.
 
-**Si falla el Sync.** Confirma que abriste la carpeta completa, que Gradle puede acceder a services.gradle.org, Google Maven y Maven Central, y que hay JDK 17 y plataforma 35 instalados. El modo simulación se compila sin google-services.json.
+**Si falla el Sync.** Confirma que abriste la carpeta completa, que Gradle puede acceder a services.gradle.org, Google Maven y Maven Central, y que Gradle usa JBR 21 y está instalada la plataforma 35. El modo simulación se compila sin google-services.json.
 
 **Archivos que vas a usar.** La carpeta app contiene la interfaz y el ViewModel. domain define los contratos; hardware implementa MQTT y el simulador; data contiene Authentication y los repositorios del historial. Los sketches están en firmware/. Para este recorrido no hace falta iniciar el backend NestJS del proyecto web anterior.
 
